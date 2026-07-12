@@ -33,6 +33,8 @@ async function run() {
         const database = client.db("Travel-Explore");
         const TourPackageCollection = database.collection("TourPackages");
         const usersCollection = database.collection("user");
+        const packagebookingCollection = database.collection("packageBookings");
+        const inquiryCollection = database.collection("inquiries");
         // const bookingsCollection = database.collection("bookings");
 
         app.post("/api/agency/packages", async (req, res) => {
@@ -437,14 +439,7 @@ async function run() {
             }
         });
 
-        /**
-         * PATCH /api/agency/profile/:id
-         * Body: { name, phone, tradeLicense, operatingRegion, website, logoUrl, address, description }
-         *
-         * এজেন্সি নিজে যেসব ফিল্ড এডিট করতে পারবে শুধু সেগুলোই আপডেট হবে।
-         * email, status, role, emailVerified — এগুলো এই এন্ডপয়েন্ট দিয়ে বদলানো যাবে না
-         * (status শুধু admin verification API দিয়ে বদলাবে, email ফিক্সড)
-         */
+
         app.patch("/api/agency/profile/:id", async (req, res) => {
             try {
                 const { id } = req.params;
@@ -651,7 +646,419 @@ async function run() {
             }
         });
 
+        app.post("/api/bookings", async (req, res) => {
+            console.log("Received request to save booking:", req.body);
+            try {
+                const body = req.body;
 
+                const required = ["sessionId", "packageId", "email"];
+                const missing = required.filter((field) => !body[field]);
+                if (missing.length) {
+                    return res.status(400).json({
+                        message: `Missing required field(s): ${missing.join(", ")}`,
+                    });
+                }
+
+                // Duplicate guard — same sessionId already saved? Don't insert again.
+                const existing = await packagebookingCollection.findOne({ sessionId: body.sessionId });
+                if (existing) {
+                    return res.status(200).json({
+                        message: "Booking already recorded.",
+                        data: existing,
+                    });
+                }
+
+                const newBookingData = {
+                    sessionId: body.sessionId,
+                    invoiceId: body.invoiceId || body.sessionId,
+                    packageId: body.packageId,
+                    agencyId: body.agencyId,
+                    travelers: body.travelerId,
+                    email: body.email,
+                    adultCount: Number(body.adultCount) || 0,
+                    childCount: Number(body.childCount) || 0,
+                    totalMale: Number(body.totalMale) || 0,
+                    totalFemale: Number(body.totalFemale) || 0,
+                    totalChildPrice: Number(body.totalChildPrice) || 0,
+                    totalAmount: Number(body.totalAmount) || 0,
+                    currency: body.currency || "usd",
+                    status: "confirmed",
+                    createdAt: new Date(),
+                };
+
+                const result = await packagebookingCollection.insertOne(newBookingData);
+
+                return res.status(201).json({
+                    message: "Booking saved successfully.",
+                    data: {
+                        _id: result.insertedId,
+                        ...newBookingData,
+                    },
+                });
+            } catch (err) {
+                console.error("Save booking error:", err);
+                return res.status(500).json({ message: "Something went wrong while saving the booking." });
+            }
+        });
+
+        app.get("/api/agency/:agencyId/bookings-summary", async (req, res) => {
+            try {
+                const { agencyId } = req.params;
+
+                const summary = await packagebookingCollection.aggregate([
+                    { $match: { agencyId } },
+                    {
+                        $group: {
+                            _id: "$packageId",
+                            totalBookings: { $sum: 1 },
+                            totalAdults: { $sum: { $ifNull: ["$adultCount", 0] } },
+                            totalChildren: { $sum: { $ifNull: ["$childCount", 0] } },
+                            totalRevenue: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            lastBookedAt: { $max: "$createdAt" },
+                        },
+                    },
+                    {
+                        $addFields: {
+                            packageObjectId: { $toObjectId: "$_id" },
+                        },
+                    },
+                    {
+                        $lookup: {
+                            from: "TourPackages",
+                            localField: "packageObjectId",
+                            foreignField: "_id",
+                            as: "packageDetails",
+                        },
+                    },
+                    { $unwind: { path: "$packageDetails", preserveNullAndEmptyArrays: true } },
+                    { $sort: { totalBookings: -1 } },
+                ]).toArray();
+
+                return res.status(200).json({ data: summary });
+            } catch (err) {
+                console.error("Fetch booking summary error:", err);
+                return res.status(500).json({ message: "Something went wrong while fetching summary." });
+            }
+        });
+
+        app.get("/api/agency/:agencyId/earnings", async (req, res) => {
+            try {
+                const { agencyId } = req.params;
+
+                const now = new Date();
+                const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+
+                // Overall totals
+                const totalsResult = await packagebookingCollection.aggregate([
+                    { $match: { agencyId, status: "confirmed" } },
+                    {
+                        $group: {
+                            _id: null,
+                            totalEarnings: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            totalBookings: { $sum: 1 },
+                            totalTravelers: {
+                                $sum: {
+                                    $add: [
+                                        { $ifNull: ["$adultCount", 0] },
+                                        { $ifNull: ["$childCount", 0] },
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ]).toArray();
+
+                const totals = totalsResult[0] || { totalEarnings: 0, totalBookings: 0, totalTravelers: 0 };
+
+                // This month vs last month (for growth %)
+                const [thisMonthResult, lastMonthResult] = await Promise.all([
+                    packagebookingCollection.aggregate([
+                        { $match: { agencyId, status: "confirmed", createdAt: { $gte: startOfThisMonth } } },
+                        { $group: { _id: null, total: { $sum: { $ifNull: ["$totalAmount", 0] } }, count: { $sum: 1 } } },
+                    ]).toArray(),
+                    packagebookingCollection.aggregate([
+                        { $match: { agencyId, status: "confirmed", createdAt: { $gte: startOfLastMonth, $lt: startOfThisMonth } } },
+                        { $group: { _id: null, total: { $sum: { $ifNull: ["$totalAmount", 0] } }, count: { $sum: 1 } } },
+                    ]).toArray(),
+                ]);
+
+                const thisMonthEarnings = thisMonthResult[0]?.total || 0;
+                const lastMonthEarnings = lastMonthResult[0]?.total || 0;
+                const growthPercent = lastMonthEarnings > 0
+                    ? (((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100).toFixed(1)
+                    : thisMonthEarnings > 0 ? 100 : 0;
+
+                // Monthly trend, last 6 months
+                const monthlyTrend = await packagebookingCollection.aggregate([
+                    { $match: { agencyId, status: "confirmed", createdAt: { $gte: sixMonthsAgo } } },
+                    {
+                        $group: {
+                            _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+                            earnings: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            bookings: { $sum: 1 },
+                        },
+                    },
+                    { $sort: { "_id.year": 1, "_id.month": 1 } },
+                ]).toArray();
+
+                // Earnings by package
+                const earningsByPackage = await packagebookingCollection.aggregate([
+                    { $match: { agencyId, status: "confirmed" } },
+                    {
+                        $group: {
+                            _id: "$packageId",
+                            earnings: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            bookings: { $sum: 1 },
+                        },
+                    },
+                    { $addFields: { packageObjectId: { $toObjectId: "$_id" } } },
+                    {
+                        $lookup: {
+                            from: "TourPackages",
+                            localField: "packageObjectId",
+                            foreignField: "_id",
+                            as: "packageDetails",
+                        },
+                    },
+                    { $unwind: { path: "$packageDetails", preserveNullAndEmptyArrays: true } },
+                    { $sort: { earnings: -1 } },
+                ]).toArray();
+
+                // Recent transactions
+                const recentTransactions = await packagebookingCollection
+                    .find({ agencyId, status: "confirmed" })
+                    .sort({ createdAt: -1 })
+                    .limit(10)
+                    .toArray();
+
+                return res.status(200).json({
+                    data: {
+                        totalEarnings: totals.totalEarnings,
+                        totalBookings: totals.totalBookings,
+                        totalTravelers: totals.totalTravelers,
+                        thisMonthEarnings,
+                        lastMonthEarnings,
+                        growthPercent,
+                        monthlyTrend,
+                        earningsByPackage,
+                        recentTransactions,
+                    },
+                });
+            } catch (err) {
+                console.error("Fetch earnings error:", err);
+                return res.status(500).json({ message: "Something went wrong while fetching earnings." });
+            }
+        });
+
+        app.get("/api/agency/:agencyId/overview", async (req, res) => {
+            try {
+                const { agencyId } = req.params;
+
+                const now = new Date();
+                const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+                // Package stats
+                const [totalPackages, publishedPackages, draftPackages] = await Promise.all([
+                    TourPackageCollection.countDocuments({ agencyId }),
+                    TourPackageCollection.countDocuments({ agencyId, status: "published" }),
+                    TourPackageCollection.countDocuments({ agencyId, status: { $ne: "published" } }),
+                ]);
+
+                // Booking + earnings totals
+                const totalsResult = await packagebookingCollection.aggregate([
+                    { $match: { agencyId, status: "confirmed" } },
+                    {
+                        $group: {
+                            _id: null,
+                            totalEarnings: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            totalBookings: { $sum: 1 },
+                            totalTravelers: {
+                                $sum: {
+                                    $add: [
+                                        { $ifNull: ["$adultCount", 0] },
+                                        { $ifNull: ["$childCount", 0] },
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ]).toArray();
+                const totals = totalsResult[0] || { totalEarnings: 0, totalBookings: 0, totalTravelers: 0 };
+
+                // This month earnings + bookings
+                const thisMonthResult = await packagebookingCollection.aggregate([
+                    { $match: { agencyId, status: "confirmed", createdAt: { $gte: startOfThisMonth } } },
+                    {
+                        $group: {
+                            _id: null,
+                            earnings: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            bookings: { $sum: 1 },
+                        },
+                    },
+                ]).toArray();
+                const thisMonth = thisMonthResult[0] || { earnings: 0, bookings: 0 };
+
+                // Top 3 performing packages
+                const topPackages = await packagebookingCollection.aggregate([
+                    { $match: { agencyId, status: "confirmed" } },
+                    {
+                        $group: {
+                            _id: "$packageId",
+                            earnings: { $sum: { $ifNull: ["$totalAmount", 0] } },
+                            bookings: { $sum: 1 },
+                        },
+                    },
+                    { $sort: { earnings: -1 } },
+                    { $limit: 3 },
+                    { $addFields: { packageObjectId: { $toObjectId: "$_id" } } },
+                    {
+                        $lookup: {
+                            from: "TourPackages",
+                            localField: "packageObjectId",
+                            foreignField: "_id",
+                            as: "packageDetails",
+                        },
+                    },
+                    { $unwind: { path: "$packageDetails", preserveNullAndEmptyArrays: true } },
+                ]).toArray();
+
+                // Recent 5 bookings
+                const recentBookings = await packagebookingCollection
+                    .find({ agencyId, status: "confirmed" })
+                    .sort({ createdAt: -1 })
+                    .limit(5)
+                    .toArray();
+
+                // Attach package title to recent bookings
+                const recentPackageIds = [...new Set(recentBookings.map((b) => b.packageId))];
+                const recentPackagesDocs = await TourPackageCollection.find({
+                    _id: { $in: recentPackageIds.map((id) => new ObjectId(id)) },
+                }).toArray();
+                const packageTitleMap = Object.fromEntries(
+                    recentPackagesDocs.map((p) => [p._id.toString(), p.title])
+                );
+                const recentBookingsWithTitle = recentBookings.map((b) => ({
+                    ...b,
+                    packageTitle: packageTitleMap[b.packageId] || "Unknown package",
+                }));
+
+                return res.status(200).json({
+                    data: {
+                        totalPackages,
+                        publishedPackages,
+                        draftPackages,
+                        totalEarnings: totals.totalEarnings,
+                        totalBookings: totals.totalBookings,
+                        totalTravelers: totals.totalTravelers,
+                        thisMonthEarnings: thisMonth.earnings,
+                        thisMonthBookings: thisMonth.bookings,
+                        topPackages,
+                        recentBookings: recentBookingsWithTitle,
+                    },
+                });
+            } catch (err) {
+                console.error("Fetch overview error:", err);
+                return res.status(500).json({ message: "Something went wrong while fetching overview." });
+            }
+        });
+
+        // 1. Create inquiry (customer-facing)
+        app.post("/api/inquiries", async (req, res) => {
+            try {
+                const body = req.body;
+
+                const required = ["name", "email", "phone", "packageId", "agencyId"];
+                const missing = required.filter((field) => !body[field]);
+                if (missing.length) {
+                    return res.status(400).json({
+                        message: `Missing required field(s): ${missing.join(", ")}`,
+                    });
+                }
+
+                const newInquiry = {
+                    agencyId: body.agencyId,
+                    packageId: body.packageId,
+                    name: body.name,
+                    email: body.email,
+                    phone: body.phone,
+                    message: body.message || "",
+                    status: "new", // new | contacted | closed
+                    createdAt: new Date(),
+                };
+
+                const result = await inquiryCollection.insertOne(newInquiry);
+
+                return res.status(201).json({
+                    message: "Inquiry submitted successfully.",
+                    data: { _id: result.insertedId, ...newInquiry },
+                });
+            } catch (err) {
+                console.error("Create inquiry error:", err);
+                return res.status(500).json({ message: "Something went wrong while submitting inquiry." });
+            }
+        });
+
+        // 2. List inquiries for an agency (dashboard)
+        app.get("/api/agency/:agencyId/inquiries", async (req, res) => {
+            try {
+                const { agencyId } = req.params;
+                const { status } = req.query; // optional filter: new | contacted | closed
+
+                const filter = { agencyId };
+                if (status) filter.status = status;
+
+                const inquiries = await inquiryCollection
+                    .find(filter)
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                // Attach package title
+                const packageIds = [...new Set(inquiries.map((i) => i.packageId))];
+                const packages = await TourPackageCollection.find({
+                    _id: { $in: packageIds.map((id) => new ObjectId(id)) },
+                }).toArray();
+                const titleMap = Object.fromEntries(packages.map((p) => [p._id.toString(), p.title]));
+
+                const enriched = inquiries.map((i) => ({
+                    ...i,
+                    packageTitle: titleMap[i.packageId] || "Unknown package",
+                }));
+
+                return res.status(200).json({ data: enriched });
+            } catch (err) {
+                console.error("Fetch inquiries error:", err);
+                return res.status(500).json({ message: "Something went wrong while fetching inquiries." });
+            }
+        });
+
+        // 3. Update inquiry status
+        app.patch("/api/inquiries/:id/status", async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { status } = req.body;
+
+                const validStatuses = ["new", "contacted", "closed"];
+                if (!validStatuses.includes(status)) {
+                    return res.status(400).json({ message: "Invalid status value." });
+                }
+
+                const result = await inquiryCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status, updatedAt: new Date() } }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: "Inquiry not found." });
+                }
+
+                return res.status(200).json({ message: "Status updated." });
+            } catch (err) {
+                console.error("Update inquiry status error:", err);
+                return res.status(500).json({ message: "Something went wrong while updating status." });
+            }
+        });
 
 
 
