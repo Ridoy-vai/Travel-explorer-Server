@@ -42,14 +42,40 @@ async function run() {
             try {
                 const body = req.body;
 
-                // Basic required-field check
-                const required = ["title", "destination", "category", "basePrice", "coverImage", "agencyId"];
-                const missing = required.filter((field) => !body[field]);
+                const required = [
+                    "title", "destination", "category", "basePrice",
+                    "coverImage", "agencyId", "tourStartDate", "tourEndDate", "pickupTime",
+                ];
+                const missing = required.filter((field) => body[field] === undefined || body[field] === "");
                 if (missing.length) {
                     return res.status(400).json({
                         message: `Missing required field(s): ${missing.join(", ")}`,
                     });
                 }
+
+                // Normalize to date-only (midnight) — pickup time never affects duration.
+                const startDate = new Date(body.tourStartDate);
+                const endDate = new Date(body.tourEndDate);
+
+                if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+                    return res.status(400).json({ message: "Invalid trip start or end date." });
+                }
+                startDate.setHours(0, 0, 0, 0);
+                endDate.setHours(0, 0, 0, 0);
+
+                if (endDate <= startDate) {
+                    return res.status(400).json({ message: "Trip end date must be after the start date." });
+                }
+
+                // Pickup time format check: "HH:MM"
+                if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(body.pickupTime)) {
+                    return res.status(400).json({ message: "Invalid pickup time format. Expected HH:MM." });
+                }
+
+                // Server re-derives duration from date-only difference — never trusts client value.
+                const diffMs = endDate.getTime() - startDate.getTime();
+                const durationNights = Math.round(diffMs / (1000 * 60 * 60 * 24));
+                const durationDays = durationNights + 1;
 
                 const newPackageData = {
                     agencyId: body.agencyId,
@@ -63,8 +89,8 @@ async function run() {
                     shortDescription: body.shortDescription,
                     description: body.description,
 
-                    durationDays: body.durationDays ? Number(body.durationDays) : undefined,
-                    durationNights: body.durationNights ? Number(body.durationNights) : undefined,
+                    durationDays,
+                    durationNights,
                     minGroupSize: body.minGroupSize ? Number(body.minGroupSize) : undefined,
                     maxGroupSize: body.maxGroupSize ? Number(body.maxGroupSize) : undefined,
 
@@ -83,11 +109,14 @@ async function run() {
                     transportation: body.transportation,
                     accommodation: body.accommodation,
 
+                    tourStartDate: startDate,
+                    tourEndDate: endDate,
+                    pickupTime: body.pickupTime, // stored as "HH:MM" string
+
                     tags: body.tags || [],
 
-                    // Always published — this endpoint only handles publishing new packages
                     status: body.status || "published",
-                    createdAt: new Date()
+                    createdAt: new Date(),
                 };
 
                 const result = await TourPackageCollection.insertOne(newPackageData);
@@ -96,7 +125,7 @@ async function run() {
                     message: "Package published successfully.",
                     data: {
                         _id: result.insertedId,
-                        ...newPackageData
+                        ...newPackageData,
                     },
                 });
             } catch (err) {
@@ -306,7 +335,7 @@ async function run() {
                 const { status } = req.body;
                 const { userid } = req.body;
                 const { userstatus } = req.body;
-                if (!userid || !userstatus !== "approved") {
+                if (!userid || userstatus !== "approved") {
                     return res.status(400).send({
                         success: false,
                         message: "Only approved agencies can update package status",
@@ -1060,6 +1089,40 @@ async function run() {
             }
         });
 
+
+        app.get("/api/travelers/:travelerId/bookings", async (req, res) => {
+            try {
+                const { travelerId } = req.params;
+
+                const bookings = await packagebookingCollection
+                    .find({ travelers: travelerId })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                if (!bookings.length) {
+                    return res.status(200).json({ data: [] });
+                }
+
+                // Attach package details
+                const packageIds = [...new Set(bookings.map((b) => b.packageId))];
+                const packages = await TourPackageCollection.find({
+                    _id: { $in: packageIds.map((id) => new ObjectId(id)) },
+                }).toArray();
+                const packageMap = Object.fromEntries(
+                    packages.map((p) => [p._id.toString(), p])
+                );
+
+                const enriched = bookings.map((b) => ({
+                    ...b,
+                    packageDetails: packageMap[b.packageId] || null,
+                }));
+
+                return res.status(200).json({ data: enriched });
+            } catch (err) {
+                console.error("Fetch traveler bookings error:", err);
+                return res.status(500).json({ message: "Something went wrong while fetching bookings." });
+            }
+        });
 
 
 
