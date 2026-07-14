@@ -329,20 +329,96 @@ async function run() {
         });
 
 
+        // app.patch("/api/agency/packages/:id/status", async (req, res) => {
+        //     try {
+        //         const { id } = req.params;
+        //         const { newStatus, userid, userstatus } = req.body;
+        //         if (!userid || userstatus !== "approved") {
+        //             return res.status(400).send({
+        //                 success: false,
+        //                 message: "Only approved agencies can update package status",
+        //             });
+        //         }
+        //         const allowedStatuses = ["published", "unpublished", "draft"];
+        //         if (!status || !allowedStatuses.includes(status)) {
+        //             return res.status(400).send({
+        //                 success: false,
+        //                 message: `status must be one of: ${allowedStatuses.join(", ")}`,
+        //             });
+        //         }
+
+        //         if (!ObjectId.isValid(id)) {
+        //             return res.status(400).send({
+        //                 success: false,
+        //                 message: "Invalid package id",
+        //             });
+        //         }
+
+        //         const result = await TourPackageCollection.updateOne(
+        //             { _id: new ObjectId(id) },
+        //             {
+        //                 $set: {
+        //                     status,
+        //                     updatedAt: new Date(),
+        //                 },
+        //             }
+        //         );
+
+        //         if (result.matchedCount === 0) {
+        //             return res.status(404).send({
+        //                 success: false,
+        //                 message: "Package not found",
+        //             });
+        //         }
+
+        //         res.send({
+        //             success: true,
+        //             message: `Status updated to ${status}`,
+        //         });
+        //     } catch (error) {
+        //         console.error("Error updating package status:", error);
+        //         res.status(500).send({
+        //             success: false,
+        //             message: "Failed to update status",
+        //             error: error.message,
+        //         });
+        //     }
+        // });
+
         app.patch("/api/agency/packages/:id/status", async (req, res) => {
             try {
                 const { id } = req.params;
-                const { status } = req.body;
-                const { userid } = req.body;
-                const { userstatus } = req.body;
-                if (!userid || userstatus !== "approved") {
+                const { newStatus, userid } = req.body; // userstatus আর client থেকে নেওয়া হচ্ছে না
+
+                if (!userid) {
                     return res.status(400).send({
+                        success: false,
+                        message: "userid is required",
+                    });
+                }
+
+                if (!ObjectId.isValid(userid)) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "Invalid userid",
+                    });
+                }
+
+                // ✅ ইউজারের আসল status DB থেকে নিজে verify করা হচ্ছে,
+                // client-এর পাঠানো userstatus আর trust করা হচ্ছে না
+                const currentUser = await usersCollection.findOne({
+                    _id: new ObjectId(userid),
+                });
+
+                if (!currentUser || currentUser.status !== "approved") {
+                    return res.status(403).send({
                         success: false,
                         message: "Only approved agencies can update package status",
                     });
                 }
+
                 const allowedStatuses = ["published", "unpublished", "draft"];
-                if (!status || !allowedStatuses.includes(status)) {
+                if (!newStatus || !allowedStatuses.includes(newStatus)) {
                     return res.status(400).send({
                         success: false,
                         message: `status must be one of: ${allowedStatuses.join(", ")}`,
@@ -356,11 +432,17 @@ async function run() {
                     });
                 }
 
+                // (ঐচ্ছিক কিন্তু ভালো practice) এই প্যাকেজটা আসলেই এই এজেন্সির কিনা তাও চেক করা যায়:
+                // const pkg = await TourPackageCollection.findOne({ _id: new ObjectId(id) });
+                // if (!pkg || pkg.agencyId?.toString() !== userid) {
+                //     return res.status(403).send({ success: false, message: "Not your package" });
+                // }
+
                 const result = await TourPackageCollection.updateOne(
                     { _id: new ObjectId(id) },
                     {
                         $set: {
-                            status,
+                            status: newStatus,
                             updatedAt: new Date(),
                         },
                     }
@@ -375,7 +457,7 @@ async function run() {
 
                 res.send({
                     success: true,
-                    message: `Status updated to ${status}`,
+                    message: `Status updated to ${newStatus}`,
                 });
             } catch (error) {
                 console.error("Error updating package status:", error);
@@ -386,7 +468,6 @@ async function run() {
                 });
             }
         });
-
         /**
          * DELETE /api/agency/packages/:id
          * প্যাকেজ পুরোপুরি ডিলিট করার জন্য
