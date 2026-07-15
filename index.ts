@@ -1870,11 +1870,13 @@ async function run() {
 run().catch(console.dir);
 
 
-
 app.get("/", (req: Request, res: Response) => {
     res.send("Travel-Bd is running!");
 });
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`);
-});
+// লোকাল ডেভেলপমেন্টের জন্য listen রাখুন, Vercel (production) এ শুধু export হবে
+if (process.env.NODE_ENV !== "production") {
+    app.listen(port, () => console.log(`Server running on port ${port}`));
+}
+
+export default app;
