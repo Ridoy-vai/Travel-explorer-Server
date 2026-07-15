@@ -1863,7 +1863,9 @@ async function run() {
         // await client.close();
     }
 }
-run().catch(console.dir);
+// run().catch(console.dir);
+
+
 
 app.get("/", (req: Request, res: Response) => {
     res.send("Travel-Bd is running!");
