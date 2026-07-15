@@ -299,9 +299,6 @@ async function run() {
             }
         });
 
-        app.get("/api/test", (req, res) => {
-            res.send("API Test OK");
-        });
 
         // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
         app.get("/api/agency/packages/:id", async (req: Request, res: Response) => {
@@ -1868,6 +1865,11 @@ async function run() {
     }
 }
 run().catch(console.dir);
+
+
+app.get("/api/test", (req, res) => {
+    res.send("API Test OK");
+});
 
 
 app.get("/", (req: Request, res: Response) => {
