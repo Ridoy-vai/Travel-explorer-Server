@@ -1,29 +1,34 @@
-const express = require('express');
+import express, { Request, Response } from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import { MongoClient, ServerApiVersion, ObjectId, Collection, Document } from "mongodb";
+
+dotenv.config();
+
 const app = express();
-const cors = require('cors');
 
-app.use(cors({
-    origin: 'http://localhost:3000', // আপনার ফ্রন্টএন্ডের নির্দিষ্ট URL
-    credentials: true,                // ক্রেডেনশিয়াল বা কুকি সাপোর্ট অ্যালাউ করার জন্য
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use(
+    cors({
+        origin: process.env.CLIENT_URI, // আপনার ফ্রন্টএন্ডের নির্দিষ্ট URL
+        credentials: true, // ক্রেডেনশিয়াল বা কুকি সাপোর্ট অ্যালাউ করার জন্য
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+    })
+);
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
-require('dotenv').config();
-const port = process.env.PORT;
-const { MongoClient, ServerApiVersion } = require('mongodb');
-const uri = process.env.MONGODB_URI;
-const { ObjectId } = require("mongodb");
+const port = process.env.PORT || 5000;
+const uri = process.env.MONGODB_URI as string;
+
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
     serverApi: {
         version: ServerApiVersion.v1,
         strict: true,
         deprecationErrors: true,
-    }
+    },
 });
 
 async function run() {
@@ -31,13 +36,13 @@ async function run() {
         // Connect the client to the server (optional starting in v4.7)
         await client.connect();
         const database = client.db("Travel-Explore");
-        const TourPackageCollection = database.collection("TourPackages");
-        const usersCollection = database.collection("user");
-        const packagebookingCollection = database.collection("packageBookings");
-        const inquiryCollection = database.collection("inquiries");
+        const TourPackageCollection: Collection<Document> = database.collection("TourPackages");
+        const usersCollection: Collection<Document> = database.collection("user");
+        const packagebookingCollection: Collection<Document> = database.collection("packageBookings");
+        const inquiryCollection: Collection<Document> = database.collection("inquiries");
         // const bookingsCollection = database.collection("bookings");
 
-        app.post("/api/agency/packages", async (req, res) => {
+        app.post("/api/agency/packages", async (req: Request, res: Response) => {
             console.log("Received request to add package:", req.body);
             try {
                 const body = req.body;
@@ -128,14 +133,16 @@ async function run() {
                         ...newPackageData,
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Add package error:", err);
                 return res.status(500).json({ message: "Something went wrong while saving the package." });
             }
         });
 
         // const TourPackageCollection = database.collection("TourPackages");
-        app.get("/api/agency/packages", async (req, res) => {
+
+        app.get("/api/agency/packages", async (req: Request, res: Response) => {
+
             try {
                 const {
                     agencyId,
@@ -156,14 +163,14 @@ async function run() {
                 const skip = (Number(page) - 1) * Number(limit);
 
                 // মূল ডাটা fetch (পেজিনেটেড)
-                const packages = await TourPackageCollection.find(query)
+                const packages = await TourPackageCollection.find(query as Document)
                     .sort({ createdAt: -1 })
                     .skip(skip)
                     .limit(Number(limit))
                     .toArray();
 
                 // মোট কতগুলো ম্যাচ করলো (pagination এর জন্য)
-                const total = await TourPackageCollection.countDocuments(query);
+                const total = await TourPackageCollection.countDocuments(query as Document);
 
                 // Tabs এর পাশে count দেখানোর জন্য প্রতিটা status এর সংখ্যা আলাদাভাবে বের করা
                 const statusCountsAgg = await TourPackageCollection.aggregate([
@@ -171,9 +178,9 @@ async function run() {
                     { $group: { _id: "$status", count: { $sum: 1 } } },
                 ]).toArray();
 
-                const statusCounts = { published: 0, unpublished: 0, draft: 0 };
+                const statusCounts: Record<string, number> = { published: 0, unpublished: 0, draft: 0 };
                 statusCountsAgg.forEach((item) => {
-                    statusCounts[item._id] = item.count;
+                    statusCounts[item._id as string] = item.count;
                 });
 
                 res.send({
@@ -187,7 +194,7 @@ async function run() {
                     },
                     statusCounts,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error fetching agency packages:", error);
                 res.status(500).send({
                     success: false,
@@ -197,11 +204,12 @@ async function run() {
             }
         });
 
+
         // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
-        app.get("/api/packages", async (req, res) => {
+        app.get("/api/packages", async (req: Request, res: Response) => {
             try {
-                const page = Math.max(parseInt(req.query.page) || 1, 1);
-                const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
+                const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+                const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 12, 1), 50);
                 const skip = (page - 1) * limit;
 
                 const filter: Record<string, any> = { status: "published" };
@@ -229,23 +237,23 @@ async function run() {
                 // ---------------- ✅ Duration ফিল্টার (নতুন) ----------------
                 // "1-3", "4-6", "7+" এই ফরম্যাটে ফ্রন্টএন্ড থেকে আসবে
                 if (req.query.duration) {
-                    const durationRanges = {
+                    const durationRanges: Record<string, any> = {
                         "1-3": { $gte: 1, $lte: 3 },
                         "4-6": { $gte: 4, $lte: 6 },
                         "7+": { $gte: 7 },
                     };
-                    const range = durationRanges[req.query.duration];
+                    const range = durationRanges[req.query.duration as string];
                     if (range) {
                         filter.durationDays = range;
                     }
                 }
 
-                const sortMap = {
+                const sortMap: Record<string, any> = {
                     newest: { createdAt: -1 },
                     priceLowToHigh: { basePrice: 1 },
                     priceHighToLow: { basePrice: -1 },
                 };
-                const sort = sortMap[req.query.sort] || sortMap.newest;
+                const sort = sortMap[req.query.sort as string] || sortMap.newest;
 
                 const result = await TourPackageCollection.find(filter)
                     .sort(sort)
@@ -269,7 +277,7 @@ async function run() {
                         hasMore,
                     },
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("GET /api/packages error:", error);
                 res.status(500).json({
                     success: false,
@@ -279,20 +287,20 @@ async function run() {
         });
 
         // ---------------- ✅ ক্যাটাগরি লিস্ট (dropdown এর জন্য, distinct values) ----------------
-        app.get("/api/packages/categories", async (req, res) => {
+        app.get("/api/packages/categories", async (req: Request, res: Response) => {
             try {
                 const categories = await TourPackageCollection.distinct("category", {
                     status: "published",
                 });
                 res.status(200).json({ success: true, data: categories });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("GET /api/packages/categories error:", error);
                 res.status(500).json({ success: false, message: "Failed to fetch categories" });
             }
         });
 
         // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
-        app.get("/api/agency/packages/:id", async (req, res) => {
+        app.get("/api/agency/packages/:id", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 console.log("Fetching package details for id:", id);
@@ -318,7 +326,7 @@ async function run() {
                     success: true,
                     data: packageDetails,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error fetching package details:", error);
                 res.status(500).send({
                     success: false,
@@ -328,64 +336,7 @@ async function run() {
             }
         });
 
-
-        // app.patch("/api/agency/packages/:id/status", async (req, res) => {
-        //     try {
-        //         const { id } = req.params;
-        //         const { newStatus, userid, userstatus } = req.body;
-        //         if (!userid || userstatus !== "approved") {
-        //             return res.status(400).send({
-        //                 success: false,
-        //                 message: "Only approved agencies can update package status",
-        //             });
-        //         }
-        //         const allowedStatuses = ["published", "unpublished", "draft"];
-        //         if (!status || !allowedStatuses.includes(status)) {
-        //             return res.status(400).send({
-        //                 success: false,
-        //                 message: `status must be one of: ${allowedStatuses.join(", ")}`,
-        //             });
-        //         }
-
-        //         if (!ObjectId.isValid(id)) {
-        //             return res.status(400).send({
-        //                 success: false,
-        //                 message: "Invalid package id",
-        //             });
-        //         }
-
-        //         const result = await TourPackageCollection.updateOne(
-        //             { _id: new ObjectId(id) },
-        //             {
-        //                 $set: {
-        //                     status,
-        //                     updatedAt: new Date(),
-        //                 },
-        //             }
-        //         );
-
-        //         if (result.matchedCount === 0) {
-        //             return res.status(404).send({
-        //                 success: false,
-        //                 message: "Package not found",
-        //             });
-        //         }
-
-        //         res.send({
-        //             success: true,
-        //             message: `Status updated to ${status}`,
-        //         });
-        //     } catch (error) {
-        //         console.error("Error updating package status:", error);
-        //         res.status(500).send({
-        //             success: false,
-        //             message: "Failed to update status",
-        //             error: error.message,
-        //         });
-        //     }
-        // });
-
-        app.patch("/api/agency/packages/:id/status", async (req, res) => {
+        app.patch("/api/agency/packages/:id/status", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { newStatus, userid } = req.body; // userstatus আর client থেকে নেওয়া হচ্ছে না
@@ -459,7 +410,7 @@ async function run() {
                     success: true,
                     message: `Status updated to ${newStatus}`,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error updating package status:", error);
                 res.status(500).send({
                     success: false,
@@ -472,7 +423,7 @@ async function run() {
          * DELETE /api/agency/packages/:id
          * প্যাকেজ পুরোপুরি ডিলিট করার জন্য
          */
-        app.delete("/api/agency/packages/:id", async (req, res) => {
+        app.delete("/api/agency/packages/:id", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -498,7 +449,7 @@ async function run() {
                     success: true,
                     message: "Package deleted successfully",
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error deleting package:", error);
                 res.status(500).send({
                     success: false,
@@ -512,7 +463,7 @@ async function run() {
          * GET /api/agency/profile/:id
          * এজেন্সির প্রোফাইল ডাটা user collection থেকে ফেচ করে
          */
-        app.get("/api/agency/profile/:id", async (req, res) => {
+        app.get("/api/agency/profile/:id", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -539,7 +490,7 @@ async function run() {
                     success: true,
                     data: agency,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error fetching agency profile:", error);
                 res.status(500).send({
                     success: false,
@@ -549,8 +500,7 @@ async function run() {
             }
         });
 
-
-        app.patch("/api/agency/profile/:id", async (req, res) => {
+        app.patch("/api/agency/profile/:id", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -610,7 +560,7 @@ async function run() {
                     message: "Profile updated successfully",
                     data: updatedAgency,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error updating agency profile:", error);
                 res.status(500).send({
                     success: false,
@@ -622,8 +572,7 @@ async function run() {
 
         //admin panel er jonno sob package dekhate hobe tai status filter lagbe na
 
-
-        app.get("/api/admin/users", async (req, res) => {
+        app.get("/api/admin/users", async (req: Request, res: Response) => {
             try {
                 const {
                     role,
@@ -644,8 +593,8 @@ async function run() {
                 const query: Record<string, any> = { role, status };
 
                 // সার্চ: email দিয়ে partial match, অথবা _id দিয়ে exact match
-                if (search && search.trim() !== "") {
-                    const trimmedSearch = search.trim();
+                if (search && (search as string).trim() !== "") {
+                    const trimmedSearch = (search as string).trim();
                     const searchConditions: Record<string, any>[] = [
                         { email: { $regex: trimmedSearch, $options: "i" } },
                     ];
@@ -679,9 +628,9 @@ async function run() {
                     ])
                     .toArray();
 
-                const statusCounts = { pending: 0, approved: 0, rejected: 0 };
+                const statusCounts: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
                 statusCountsAgg.forEach((item) => {
-                    statusCounts[item._id] = item.count;
+                    statusCounts[item._id as string] = item.count;
                 });
 
                 res.send({
@@ -695,7 +644,7 @@ async function run() {
                     },
                     statusCounts,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error fetching admin users:", error);
                 res.status(500).send({
                     success: false,
@@ -705,7 +654,7 @@ async function run() {
             }
         });
 
-        app.patch("/api/admin/users/:id/status", async (req, res) => {
+        app.patch("/api/admin/users/:id/status", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body;
@@ -746,7 +695,7 @@ async function run() {
                     success: true,
                     message: `Status updated to ${status}`,
                 });
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error updating user status:", error);
                 res.status(500).send({
                     success: false,
@@ -756,7 +705,7 @@ async function run() {
             }
         });
 
-        app.post("/api/bookings", async (req, res) => {
+        app.post("/api/bookings", async (req: Request, res: Response) => {
             console.log("Received request to save booking:", req.body);
             try {
                 const body = req.body;
@@ -805,13 +754,13 @@ async function run() {
                         ...newBookingData,
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Save booking error:", err);
                 return res.status(500).json({ message: "Something went wrong while saving the booking." });
             }
         });
 
-        app.get("/api/agency/:agencyId/bookings-summary", async (req, res) => {
+        app.get("/api/agency/:agencyId/bookings-summary", async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
 
@@ -845,13 +794,13 @@ async function run() {
                 ]).toArray();
 
                 return res.status(200).json({ data: summary });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch booking summary error:", err);
                 return res.status(500).json({ message: "Something went wrong while fetching summary." });
             }
         });
 
-        app.get("/api/agency/:agencyId/earnings", async (req, res) => {
+        app.get("/api/agency/:agencyId/earnings", async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
 
@@ -894,8 +843,8 @@ async function run() {
                     ]).toArray(),
                 ]);
 
-                const thisMonthEarnings = thisMonthResult[0]?.total || 0;
-                const lastMonthEarnings = lastMonthResult[0]?.total || 0;
+                const thisMonthEarnings = (thisMonthResult[0] as any)?.total || 0;
+                const lastMonthEarnings = (lastMonthResult[0] as any)?.total || 0;
                 const growthPercent = lastMonthEarnings > 0
                     ? (((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100).toFixed(1)
                     : thisMonthEarnings > 0 ? 100 : 0;
@@ -956,13 +905,13 @@ async function run() {
                         recentTransactions,
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch earnings error:", err);
                 return res.status(500).json({ message: "Something went wrong while fetching earnings." });
             }
         });
 
-        app.get("/api/agency/:agencyId/overview", async (req, res) => {
+        app.get("/api/agency/:agencyId/overview", async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
 
@@ -1042,14 +991,14 @@ async function run() {
                     .toArray();
 
                 // Attach package title to recent bookings
-                const recentPackageIds = [...new Set(recentBookings.map((b) => b.packageId))];
+                const recentPackageIds = [...new Set(recentBookings.map((b: any) => b.packageId))];
                 const recentPackagesDocs = await TourPackageCollection.find({
-                    _id: { $in: recentPackageIds.map((id) => new ObjectId(id)) },
+                    _id: { $in: recentPackageIds.map((id: any) => new ObjectId(id)) },
                 }).toArray();
                 const packageTitleMap = Object.fromEntries(
-                    recentPackagesDocs.map((p) => [p._id.toString(), p.title])
+                    recentPackagesDocs.map((p: any) => [p._id.toString(), p.title])
                 );
-                const recentBookingsWithTitle = recentBookings.map((b) => ({
+                const recentBookingsWithTitle = recentBookings.map((b: any) => ({
                     ...b,
                     packageTitle: packageTitleMap[b.packageId] || "Unknown package",
                 }));
@@ -1068,14 +1017,14 @@ async function run() {
                         recentBookings: recentBookingsWithTitle,
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch overview error:", err);
                 return res.status(500).json({ message: "Something went wrong while fetching overview." });
             }
         });
 
         // 1. Create inquiry (customer-facing)
-        app.post("/api/inquiries", async (req, res) => {
+        app.post("/api/inquiries", async (req: Request, res: Response) => {
             try {
                 const body = req.body;
 
@@ -1104,14 +1053,14 @@ async function run() {
                     message: "Inquiry submitted successfully.",
                     data: { _id: result.insertedId, ...newInquiry },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Create inquiry error:", err);
                 return res.status(500).json({ message: "Something went wrong while submitting inquiry." });
             }
         });
 
         // 2. List inquiries for an agency (dashboard)
-        app.get("/api/agency/:agencyId/inquiries", async (req, res) => {
+        app.get("/api/agency/:agencyId/inquiries", async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
                 const { status } = req.query; // optional filter: new | contacted | closed
@@ -1125,26 +1074,26 @@ async function run() {
                     .toArray();
 
                 // Attach package title
-                const packageIds = [...new Set(inquiries.map((i) => i.packageId))];
+                const packageIds = [...new Set(inquiries.map((i: any) => i.packageId))];
                 const packages = await TourPackageCollection.find({
-                    _id: { $in: packageIds.map((id) => new ObjectId(id)) },
+                    _id: { $in: packageIds.map((id: any) => new ObjectId(id)) },
                 }).toArray();
-                const titleMap = Object.fromEntries(packages.map((p) => [p._id.toString(), p.title]));
+                const titleMap = Object.fromEntries(packages.map((p: any) => [p._id.toString(), p.title]));
 
-                const enriched = inquiries.map((i) => ({
+                const enriched = inquiries.map((i: any) => ({
                     ...i,
                     packageTitle: titleMap[i.packageId] || "Unknown package",
                 }));
 
                 return res.status(200).json({ data: enriched });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch inquiries error:", err);
                 return res.status(500).json({ message: "Something went wrong while fetching inquiries." });
             }
         });
 
         // 3. Update inquiry status
-        app.patch("/api/inquiries/:id/status", async (req, res) => {
+        app.patch("/api/inquiries/:id/status", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body;
@@ -1164,14 +1113,13 @@ async function run() {
                 }
 
                 return res.status(200).json({ message: "Status updated." });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Update inquiry status error:", err);
                 return res.status(500).json({ message: "Something went wrong while updating status." });
             }
         });
 
-
-        app.get("/api/travelers/:travelerId/bookings", async (req, res) => {
+        app.get("/api/travelers/:travelerId/bookings", async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
 
@@ -1185,27 +1133,27 @@ async function run() {
                 }
 
                 // Attach package details
-                const packageIds = [...new Set(bookings.map((b) => b.packageId))];
+                const packageIds = [...new Set(bookings.map((b: any) => b.packageId))];
                 const packages = await TourPackageCollection.find({
-                    _id: { $in: packageIds.map((id) => new ObjectId(id)) },
+                    _id: { $in: packageIds.map((id: any) => new ObjectId(id)) },
                 }).toArray();
                 const packageMap = Object.fromEntries(
-                    packages.map((p) => [p._id.toString(), p])
+                    packages.map((p: any) => [p._id.toString(), p])
                 );
 
-                const enriched = bookings.map((b) => ({
+                const enriched = bookings.map((b: any) => ({
                     ...b,
                     packageDetails: packageMap[b.packageId] || null,
                 }));
 
                 return res.status(200).json({ data: enriched });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch traveler bookings error:", err);
                 return res.status(500).json({ message: "Something went wrong while fetching bookings." });
             }
         });
 
-        app.get("/api/travelers/:travelerId/dashboard-overview", async (req, res) => {
+        app.get("/api/travelers/:travelerId/dashboard-overview", async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
 
@@ -1239,7 +1187,7 @@ async function run() {
 
                 if (!bookings.length) {
                     const now = new Date();
-                    const emptyTrend = [];
+                    const emptyTrend: { month: string; spent: number }[] = [];
                     for (let i = 5; i >= 0; i--) {
                         const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
                         emptyTrend.push({
@@ -1265,22 +1213,22 @@ async function run() {
                 }
 
                 const now = new Date();
-                const currency = bookings[0].currency || "usd";
+                const currency = (bookings[0] as any).currency || "usd";
 
                 // ---------------- Stats ----------------
                 const totalTrips = bookings.length;
                 // NOTE: totalAmount assumed to be in the smallest currency unit
                 // (Stripe-style cents). If it's already a whole-currency value,
                 // remove the "/ 100" wherever amounts are used below.
-                const totalSpent = bookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+                const totalSpent = bookings.reduce((sum: number, b: any) => sum + (b.totalAmount || 0), 0);
 
                 const uniqueDestinations = new Set(
                     bookings.map(
-                        (b) => b.packageDetails?.title || b.packageDetails?.destination || b.packageId
+                        (b: any) => b.packageDetails?.title || b.packageDetails?.destination || b.packageId
                     )
                 ).size;
 
-                const isUpcoming = (b) =>
+                const isUpcoming = (b: any) =>
                     b.status === "confirmed" &&
                     b.packageDetails?.tourStartDate &&
                     new Date(b.packageDetails.tourStartDate) >= now;
@@ -1290,8 +1238,8 @@ async function run() {
                 // ---------------- Spending trend (fixed last-6-months range) ----------------
                 // Always emit 6 points (even with 0 spend) so the line chart on the
                 // frontend has enough points to draw an actual line, not just a dot.
-                const trendMap = new Map();
-                bookings.forEach((b) => {
+                const trendMap = new Map<string, number>();
+                bookings.forEach((b: any) => {
                     const key = new Date(b.createdAt).toLocaleString("en-US", {
                         month: "short",
                         year: "2-digit",
@@ -1299,7 +1247,7 @@ async function run() {
                     trendMap.set(key, (trendMap.get(key) || 0) + (b.totalAmount || 0));
                 });
 
-                const spendingTrend = [];
+                const spendingTrend: { month: string; spent: number }[] = [];
                 for (let i = 5; i >= 0; i--) {
                     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
                     const key = d.toLocaleString("en-US", { month: "short", year: "2-digit" });
@@ -1307,8 +1255,8 @@ async function run() {
                 }
 
                 // ---------------- Category breakdown ----------------
-                const categoryMap = new Map();
-                bookings.forEach((b) => {
+                const categoryMap = new Map<string, number>();
+                bookings.forEach((b: any) => {
                     const cat = b.packageDetails?.category || "Other";
                     categoryMap.set(cat, (categoryMap.get(cat) || 0) + 1);
                 });
@@ -1320,13 +1268,13 @@ async function run() {
                 // ---------------- Upcoming trips (confirmed + future tourStartDate) ----------------
                 const upcomingTrips = bookings
                     .filter(isUpcoming)
-                    .sort((a, b) => {
+                    .sort((a: any, b: any) => {
                         const aDate = new Date(a.packageDetails?.tourStartDate ?? 0).getTime();
                         const bDate = new Date(b.packageDetails?.tourStartDate ?? 0).getTime();
                         return aDate - bDate;
                     })
                     .slice(0, 4)
-                    .map((b) => ({
+                    .map((b: any) => ({
                         _id: b._id,
                         destination: b.packageDetails?.title || b.packageDetails?.destination || "Untitled Package",
                         image: b.packageDetails?.coverImage || null,
@@ -1337,7 +1285,7 @@ async function run() {
                     }));
 
                 // ---------------- Recent bookings (latest 6) ----------------
-                const recentBookings = bookings.slice(0, 6).map((b) => ({
+                const recentBookings = bookings.slice(0, 6).map((b: any) => ({
                     _id: b._id,
                     destination: b.packageDetails?.title || b.packageDetails?.destination || "Untitled Package",
                     bookedOn: b.createdAt,
@@ -1361,7 +1309,7 @@ async function run() {
                         recentBookings,
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch traveler dashboard overview error:", err);
                 return res
                     .status(500)
@@ -1369,19 +1317,15 @@ async function run() {
             }
         });
 
-        const { ObjectId } = require("mongodb");
-
         // usersCollection = database.collection("user");  // আগে থেকে define করা থাকলে এই লাইন লাগবে না
-
-
 
         // ============================================================
         // PATCH /api/traveler/profile/:travelerId
         // name, phone, and avatarUrl are editable here — email, role,
         // status, emailVerified stay server-controlled and are ignored
-        // even if sent in the body.  
+        // even if sent in the body.
         // ============================================================
-        app.patch("/api/traveler/profile/:travelerId", async (req, res) => {
+        app.patch("/api/traveler/profile/:travelerId", async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
                 const { name, phone, avatarUrl } = req.body;
@@ -1418,7 +1362,7 @@ async function run() {
                 }
 
                 return res.status(200).json({ success: true, data: updateResult });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Update traveler profile error:", err);
                 return res
                     .status(500)
@@ -1426,14 +1370,11 @@ async function run() {
             }
         });
 
-        // import { ObjectId } from "mongodb";
-        // (jodi CommonJS use koren: const { ObjectId } = require("mongodb");)
-
         // ---- Get travelers (paginated) ----
-        app.get("/api/admin/allusers/alltravelers", async (req, res) => {
+        app.get("/api/admin/allusers/alltravelers", async (req: Request, res: Response) => {
             try {
-                const page = Math.max(parseInt(req.query.page) || 1, 1);
-                const limit = Math.max(parseInt(req.query.limit) || 10, 1);
+                const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+                const limit = Math.max(parseInt(req.query.limit as string) || 10, 1);
                 const skip = (page - 1) * limit;
 
                 const [users, total] = await Promise.all([
@@ -1449,17 +1390,17 @@ async function run() {
                     success: true,
                     data: { users, total, page, limit, totalPages: Math.ceil(total / limit) },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch travelers error:", err);
                 res.status(500).json({ success: false, message: "Something went wrong while fetching travelers." });
             }
         });
 
         // ---- Get agencies (paginated) ----
-        app.get("/api/admin/allusers/allagencies", async (req, res) => {
+        app.get("/api/admin/allusers/allagencies", async (req: Request, res: Response) => {
             try {
-                const page = Math.max(parseInt(req.query.page) || 1, 1);
-                const limit = Math.max(parseInt(req.query.limit) || 10, 1);
+                const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+                const limit = Math.max(parseInt(req.query.limit as string) || 10, 1);
                 const skip = (page - 1) * limit;
 
                 const [users, total] = await Promise.all([
@@ -1475,14 +1416,14 @@ async function run() {
                     success: true,
                     data: { users, total, page, limit, totalPages: Math.ceil(total / limit) },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch agencies error:", err);
                 res.status(500).json({ success: false, message: "Something went wrong while fetching agencies." });
             }
         });
 
         // ---- Change role ----
-        app.patch("/api/admin/allusers/:id/role", async (req, res) => {
+        app.patch("/api/admin/allusers/:id/role", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { role } = req.body;
@@ -1507,14 +1448,14 @@ async function run() {
                 }
 
                 res.status(200).json({ success: true, message: "Role updated successfully.", data: result });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Update role error:", err);
                 res.status(500).json({ success: false, message: "Something went wrong while updating role." });
             }
         });
 
         // ---- Block / Unblock ----
-        app.patch("/api/admin/allusers/:id/status", async (req, res) => {
+        app.patch("/api/admin/allusers/:id/status", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body; // "active" | "blocked"
@@ -1542,14 +1483,14 @@ async function run() {
                     message: `User ${status === "blocked" ? "blocked" : "unblocked"} successfully.`,
                     data: result,
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Update status error:", err);
                 res.status(500).json({ success: false, message: "Something went wrong while updating status." });
             }
         });
 
         // ---- Delete user ----
-        app.delete("/api/admin/allusers/:id", async (req, res) => {
+        app.delete("/api/admin/allusers/:id", async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -1564,7 +1505,7 @@ async function run() {
                 }
 
                 res.status(200).json({ success: true, message: "User deleted successfully." });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Delete user error:", err);
                 res.status(500).json({ success: false, message: "Something went wrong while deleting user." });
             }
@@ -1577,7 +1518,7 @@ async function run() {
         //   const TourPackageCollection = database.collection("TourPackages");
         //   const packagebookingCollection = database.collection("packageBookings");
 
-        app.get("/api/admin/overview", async (req, res) => {
+        app.get("/api/admin/overview", async (req: Request, res: Response) => {
             try {
                 const [
                     usersByRole,
@@ -1655,30 +1596,30 @@ async function run() {
                             users: totalUsers,
                             packages: totalPackages,
                             bookings: totalBookings,
-                            revenue: totalRevenueAgg[0]?.total || 0,
+                            revenue: (totalRevenueAgg[0] as any)?.total || 0,
                         },
-                        usersByRole: usersByRole.map((u) => ({
+                        usersByRole: usersByRole.map((u: any) => ({
                             role: u._id || "unknown",
                             count: u.count,
                         })),
-                        packagesByStatus: packagesByStatus.map((p) => ({
+                        packagesByStatus: packagesByStatus.map((p: any) => ({
                             status: p._id || "unknown",
                             count: p.count,
                         })),
-                        packagesByCategory: packagesByCategory.map((c) => ({
+                        packagesByCategory: packagesByCategory.map((c: any) => ({
                             category: c._id || "Uncategorized",
                             count: c.count,
                         })),
-                        bookingsByStatus: bookingsByStatus.map((b) => ({
+                        bookingsByStatus: bookingsByStatus.map((b: any) => ({
                             status: b._id || "unknown",
                             count: b.count,
                         })),
-                        revenueByMonth: revenueByMonthAgg.map((r) => ({
+                        revenueByMonth: revenueByMonthAgg.map((r: any) => ({
                             month: `${monthNames[r._id.month - 1]} ${r._id.year}`,
                             revenue: r.revenue,
                             bookings: r.bookings,
                         })),
-                        recentBookings: recentBookings.map((b) => ({
+                        recentBookings: recentBookings.map((b: any) => ({
                             _id: b._id,
                             email: b.email,
                             totalAmount: b.totalAmount,
@@ -1688,7 +1629,7 @@ async function run() {
                         })),
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Admin overview error:", err);
                 res.status(500).json({
                     success: false,
@@ -1705,7 +1646,7 @@ async function run() {
         //   const packagebookingCollection = database.collection("packageBookings");
 
         // ---- Finance summary (stat cards + charts) ----
-        app.get("/api/admin/finance/summary", async (req, res) => {
+        app.get("/api/admin/finance/summary", async (req: Request, res: Response) => {
             try {
                 const [
                     confirmedAgg,
@@ -1785,34 +1726,34 @@ async function run() {
                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
                 ];
 
-                const pending = statusCounts.find((s) => s._id === "pending");
+                const pending: any = statusCounts.find((s: any) => s._id === "pending");
 
                 res.status(200).json({
                     success: true,
                     data: {
-                        totalRevenue: confirmedAgg[0]?.total || 0,
-                        confirmedCount: confirmedAgg[0]?.count || 0,
-                        avgBookingValue: avgAgg[0]?.avg || 0,
+                        totalRevenue: (confirmedAgg[0] as any)?.total || 0,
+                        confirmedCount: (confirmedAgg[0] as any)?.count || 0,
+                        avgBookingValue: (avgAgg[0] as any)?.avg || 0,
                         pendingAmount: pending?.amount || 0,
                         pendingCount: pending?.count || 0,
-                        statusBreakdown: statusCounts.map((s) => ({
+                        statusBreakdown: statusCounts.map((s: any) => ({
                             status: s._id || "unknown",
                             count: s.count,
                             amount: s.amount,
                         })),
-                        revenueByMonth: revenueByMonthAgg.map((r) => ({
+                        revenueByMonth: revenueByMonthAgg.map((r: any) => ({
                             month: `${monthNames[r._id.month - 1]} ${r._id.year}`,
                             revenue: r.revenue,
                             bookings: r.bookings,
                         })),
-                        revenueByAgency: revenueByAgencyAgg.map((a) => ({
+                        revenueByAgency: revenueByAgencyAgg.map((a: any) => ({
                             agency: a._id,
                             revenue: a.revenue,
                             bookings: a.bookings,
                         })),
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Finance summary error:", err);
                 res.status(500).json({
                     success: false,
@@ -1822,10 +1763,10 @@ async function run() {
         });
 
         // ---- Transactions (paginated, filterable, searchable) ----
-        app.get("/api/admin/finance/transactions", async (req, res) => {
+        app.get("/api/admin/finance/transactions", async (req: Request, res: Response) => {
             try {
-                const page = Math.max(parseInt(req.query.page) || 1, 1);
-                const limit = Math.max(parseInt(req.query.limit) || 10, 1);
+                const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+                const limit = Math.max(parseInt(req.query.limit as string) || 10, 1);
                 const skip = (page - 1) * limit;
                 const { status, search } = req.query;
 
@@ -1893,7 +1834,7 @@ async function run() {
                         totalPages: Math.ceil(total / limit),
                     },
                 });
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Fetch transactions error:", err);
                 res.status(500).json({
                     success: false,
@@ -1901,11 +1842,6 @@ async function run() {
                 });
             }
         });
-
-
-
-
-
 
 
 
@@ -1929,10 +1865,10 @@ async function run() {
 }
 run().catch(console.dir);
 
-app.get('/', (req, res) => {
-    res.send('Travel-Bd is running!')
-})
+app.get("/", (req: Request, res: Response) => {
+    res.send("Travel-Bd is running!");
+});
 
 app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-})
+    console.log(`Example app listening on port ${port}`);
+});
