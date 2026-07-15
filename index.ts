@@ -1326,6 +1326,42 @@ async function run() {
         // status, emailVerified stay server-controlled and are ignored
         // even if sent in the body.
         // ============================================================
+
+        app.get("/api/traveler/profile/:travelerId", async (req: Request, res: Response) => {
+            try {
+                const { travelerId } = req.params;
+
+                if (!ObjectId.isValid(travelerId)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid traveler ID",
+                    });
+                }
+
+                const result = await usersCollection.findOne({
+                    _id: new ObjectId(travelerId),
+                });
+
+                if (!result) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Traveler not found",
+                    });
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    data: result,
+                });
+            } catch (error) {
+                console.error("Traveler profile error:", error);
+
+                return res.status(500).json({
+                    success: false,
+                    message: "Internal server error",
+                });
+            }
+        });
         app.patch("/api/traveler/profile/:travelerId", async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
