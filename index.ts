@@ -204,7 +204,7 @@ async function run() {
                 const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
                 const skip = (page - 1) * limit;
 
-                const filter = { status: "published" };
+                const filter: Record<string, any> = { status: "published" };
 
                 if (req.query.category) {
                     filter.category = req.query.category;
@@ -573,7 +573,7 @@ async function run() {
                     "description",
                 ];
 
-                const updateData = {};
+                const updateData: Record<string, any> = {};
                 editableFields.forEach((field) => {
                     if (req.body[field] !== undefined) {
                         updateData[field] = req.body[field];
@@ -641,12 +641,12 @@ async function run() {
                     });
                 }
 
-                const query = { role, status };
+                const query: Record<string, any> = { role, status };
 
                 // সার্চ: email দিয়ে partial match, অথবা _id দিয়ে exact match
                 if (search && search.trim() !== "") {
                     const trimmedSearch = search.trim();
-                    const searchConditions = [
+                    const searchConditions: Record<string, any>[] = [
                         { email: { $regex: trimmedSearch, $options: "i" } },
                     ];
 
@@ -1116,7 +1116,7 @@ async function run() {
                 const { agencyId } = req.params;
                 const { status } = req.query; // optional filter: new | contacted | closed
 
-                const filter = { agencyId };
+                const filter: Record<string, any> = { agencyId };
                 if (status) filter.status = status;
 
                 const inquiries = await inquiryCollection
@@ -1320,10 +1320,11 @@ async function run() {
                 // ---------------- Upcoming trips (confirmed + future tourStartDate) ----------------
                 const upcomingTrips = bookings
                     .filter(isUpcoming)
-                    .sort(
-                        (a, b) =>
-                            new Date(a.packageDetails.tourStartDate) - new Date(b.packageDetails.tourStartDate)
-                    )
+                    .sort((a, b) => {
+                        const aDate = new Date(a.packageDetails?.tourStartDate ?? 0).getTime();
+                        const bDate = new Date(b.packageDetails?.tourStartDate ?? 0).getTime();
+                        return aDate - bDate;
+                    })
                     .slice(0, 4)
                     .map((b) => ({
                         _id: b._id,
@@ -1395,7 +1396,7 @@ async function run() {
                         .json({ success: false, message: "Name and phone are required." });
                 }
 
-                const updateFields = {
+                const updateFields: Record<string, any> = {
                     name,
                     phone,
                     updatedAt: new Date(),
@@ -1828,7 +1829,7 @@ async function run() {
                 const skip = (page - 1) * limit;
                 const { status, search } = req.query;
 
-                const match = {};
+                const match: Record<string, any> = {};
                 if (status && status !== "all") {
                     match.status = status;
                 }
