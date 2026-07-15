@@ -1205,10 +1205,701 @@ async function run() {
             }
         });
 
+        app.get("/api/travelers/:travelerId/dashboard-overview", async (req, res) => {
+            try {
+                const { travelerId } = req.params;
+
+                // Join bookings -> TourPackages in one aggregation instead of
+                // doing a separate find() + in-memory map like the bookings route.
+                const bookings = await packagebookingCollection
+                    .aggregate([
+                        { $match: { travelers: travelerId } },
+                        {
+                            $addFields: {
+                                packageObjectId: { $toObjectId: "$packageId" },
+                            },
+                        },
+                        {
+                            $lookup: {
+                                from: "TourPackages",
+                                localField: "packageObjectId",
+                                foreignField: "_id",
+                                as: "packageDetails",
+                            },
+                        },
+                        {
+                            $unwind: {
+                                path: "$packageDetails",
+                                preserveNullAndEmptyArrays: true,
+                            },
+                        },
+                        { $sort: { createdAt: -1 } },
+                    ])
+                    .toArray();
+
+                if (!bookings.length) {
+                    const now = new Date();
+                    const emptyTrend = [];
+                    for (let i = 5; i >= 0; i--) {
+                        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                        emptyTrend.push({
+                            month: d.toLocaleString("en-US", { month: "short", year: "2-digit" }),
+                            spent: 0,
+                        });
+                    }
+                    return res.status(200).json({
+                        data: {
+                            stats: {
+                                totalTrips: 0,
+                                totalSpent: 0,
+                                currency: "usd",
+                                uniqueDestinations: 0,
+                                upcomingCount: 0,
+                            },
+                            spendingTrend: emptyTrend,
+                            categoryBreakdown: [],
+                            upcomingTrips: [],
+                            recentBookings: [],
+                        },
+                    });
+                }
+
+                const now = new Date();
+                const currency = bookings[0].currency || "usd";
+
+                // ---------------- Stats ----------------
+                const totalTrips = bookings.length;
+                // NOTE: totalAmount assumed to be in the smallest currency unit
+                // (Stripe-style cents). If it's already a whole-currency value,
+                // remove the "/ 100" wherever amounts are used below.
+                const totalSpent = bookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+
+                const uniqueDestinations = new Set(
+                    bookings.map(
+                        (b) => b.packageDetails?.title || b.packageDetails?.destination || b.packageId
+                    )
+                ).size;
+
+                const isUpcoming = (b) =>
+                    b.status === "confirmed" &&
+                    b.packageDetails?.tourStartDate &&
+                    new Date(b.packageDetails.tourStartDate) >= now;
+
+                const upcomingCount = bookings.filter(isUpcoming).length;
+
+                // ---------------- Spending trend (fixed last-6-months range) ----------------
+                // Always emit 6 points (even with 0 spend) so the line chart on the
+                // frontend has enough points to draw an actual line, not just a dot.
+                const trendMap = new Map();
+                bookings.forEach((b) => {
+                    const key = new Date(b.createdAt).toLocaleString("en-US", {
+                        month: "short",
+                        year: "2-digit",
+                    });
+                    trendMap.set(key, (trendMap.get(key) || 0) + (b.totalAmount || 0));
+                });
+
+                const spendingTrend = [];
+                for (let i = 5; i >= 0; i--) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    const key = d.toLocaleString("en-US", { month: "short", year: "2-digit" });
+                    spendingTrend.push({ month: key, spent: trendMap.get(key) || 0 });
+                }
+
+                // ---------------- Category breakdown ----------------
+                const categoryMap = new Map();
+                bookings.forEach((b) => {
+                    const cat = b.packageDetails?.category || "Other";
+                    categoryMap.set(cat, (categoryMap.get(cat) || 0) + 1);
+                });
+                const categoryBreakdown = Array.from(categoryMap.entries()).map(([name, value]) => ({
+                    name,
+                    value,
+                }));
+
+                // ---------------- Upcoming trips (confirmed + future tourStartDate) ----------------
+                const upcomingTrips = bookings
+                    .filter(isUpcoming)
+                    .sort(
+                        (a, b) =>
+                            new Date(a.packageDetails.tourStartDate) - new Date(b.packageDetails.tourStartDate)
+                    )
+                    .slice(0, 4)
+                    .map((b) => ({
+                        _id: b._id,
+                        destination: b.packageDetails?.title || b.packageDetails?.destination || "Untitled Package",
+                        image: b.packageDetails?.coverImage || null,
+                        tourStartDate: b.packageDetails?.tourStartDate || null,
+                        tourEndDate: b.packageDetails?.tourEndDate || null,
+                        travelers: (b.adultCount || 0) + (b.childCount || 0),
+                        status: b.status,
+                    }));
+
+                // ---------------- Recent bookings (latest 6) ----------------
+                const recentBookings = bookings.slice(0, 6).map((b) => ({
+                    _id: b._id,
+                    destination: b.packageDetails?.title || b.packageDetails?.destination || "Untitled Package",
+                    bookedOn: b.createdAt,
+                    amount: b.totalAmount,
+                    currency: b.currency,
+                    status: b.status,
+                }));
+
+                return res.status(200).json({
+                    data: {
+                        stats: {
+                            totalTrips,
+                            totalSpent,
+                            currency,
+                            uniqueDestinations,
+                            upcomingCount,
+                        },
+                        spendingTrend,
+                        categoryBreakdown,
+                        upcomingTrips,
+                        recentBookings,
+                    },
+                });
+            } catch (err) {
+                console.error("Fetch traveler dashboard overview error:", err);
+                return res
+                    .status(500)
+                    .json({ message: "Something went wrong while fetching dashboard overview." });
+            }
+        });
+
+        const { ObjectId } = require("mongodb");
+
+        // usersCollection = database.collection("user");  // আগে থেকে define করা থাকলে এই লাইন লাগবে না
 
 
 
+        // ============================================================
+        // PATCH /api/traveler/profile/:travelerId
+        // name, phone, and avatarUrl are editable here — email, role,
+        // status, emailVerified stay server-controlled and are ignored
+        // even if sent in the body.  
+        // ============================================================
+        app.patch("/api/traveler/profile/:travelerId", async (req, res) => {
+            try {
+                const { travelerId } = req.params;
+                const { name, phone, avatarUrl } = req.body;
 
+                if (!ObjectId.isValid(travelerId)) {
+                    return res.status(400).json({ success: false, message: "Invalid traveler id." });
+                }
+
+                if (!name || !phone) {
+                    return res
+                        .status(400)
+                        .json({ success: false, message: "Name and phone are required." });
+                }
+
+                const updateFields = {
+                    name,
+                    phone,
+                    updatedAt: new Date(),
+                };
+
+                // avatarUrl ঐচ্ছিক — পাঠানো হলে তবেই সেভ হবে
+                if (avatarUrl) {
+                    updateFields.avatarUrl = avatarUrl;
+                }
+
+                const updateResult = await usersCollection.findOneAndUpdate(
+                    { _id: new ObjectId(travelerId), role: "traveler" },
+                    { $set: updateFields },
+                    { returnDocument: "after" }
+                );
+
+                if (!updateResult) {
+                    return res.status(404).json({ success: false, message: "Traveler not found." });
+                }
+
+                return res.status(200).json({ success: true, data: updateResult });
+            } catch (err) {
+                console.error("Update traveler profile error:", err);
+                return res
+                    .status(500)
+                    .json({ success: false, message: "Something went wrong while saving changes." });
+            }
+        });
+
+        // import { ObjectId } from "mongodb";
+        // (jodi CommonJS use koren: const { ObjectId } = require("mongodb");)
+
+        // ---- Get travelers (paginated) ----
+        app.get("/api/admin/allusers/alltravelers", async (req, res) => {
+            try {
+                const page = Math.max(parseInt(req.query.page) || 1, 1);
+                const limit = Math.max(parseInt(req.query.limit) || 10, 1);
+                const skip = (page - 1) * limit;
+
+                const [users, total] = await Promise.all([
+                    usersCollection
+                        .find({ role: "traveler" }, { projection: { password: 0 } })
+                        .skip(skip)
+                        .limit(limit)
+                        .toArray(),
+                    usersCollection.countDocuments({ role: "traveler" }),
+                ]);
+
+                res.status(200).json({
+                    success: true,
+                    data: { users, total, page, limit, totalPages: Math.ceil(total / limit) },
+                });
+            } catch (err) {
+                console.error("Fetch travelers error:", err);
+                res.status(500).json({ success: false, message: "Something went wrong while fetching travelers." });
+            }
+        });
+
+        // ---- Get agencies (paginated) ----
+        app.get("/api/admin/allusers/allagencies", async (req, res) => {
+            try {
+                const page = Math.max(parseInt(req.query.page) || 1, 1);
+                const limit = Math.max(parseInt(req.query.limit) || 10, 1);
+                const skip = (page - 1) * limit;
+
+                const [users, total] = await Promise.all([
+                    usersCollection
+                        .find({ role: "agency" }, { projection: { password: 0 } })
+                        .skip(skip)
+                        .limit(limit)
+                        .toArray(),
+                    usersCollection.countDocuments({ role: "agency" }),
+                ]);
+
+                res.status(200).json({
+                    success: true,
+                    data: { users, total, page, limit, totalPages: Math.ceil(total / limit) },
+                });
+            } catch (err) {
+                console.error("Fetch agencies error:", err);
+                res.status(500).json({ success: false, message: "Something went wrong while fetching agencies." });
+            }
+        });
+
+        // ---- Change role ----
+        app.patch("/api/admin/allusers/:id/role", async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { role } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "Invalid user id." });
+                }
+
+                const allowedRoles = ["traveler", "agency", "admin"];
+                if (!allowedRoles.includes(role)) {
+                    return res.status(400).json({ success: false, message: "Invalid role." });
+                }
+
+                const result = await usersCollection.findOneAndUpdate(
+                    { _id: new ObjectId(id) },
+                    { $set: { role } },
+                    { returnDocument: "after", projection: { password: 0 } }
+                );
+
+                if (!result) {
+                    return res.status(404).json({ success: false, message: "User not found." });
+                }
+
+                res.status(200).json({ success: true, message: "Role updated successfully.", data: result });
+            } catch (err) {
+                console.error("Update role error:", err);
+                res.status(500).json({ success: false, message: "Something went wrong while updating role." });
+            }
+        });
+
+        // ---- Block / Unblock ----
+        app.patch("/api/admin/allusers/:id/status", async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { status } = req.body; // "active" | "blocked"
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "Invalid user id." });
+                }
+
+                if (!["active", "blocked"].includes(status)) {
+                    return res.status(400).json({ success: false, message: "Invalid status." });
+                }
+
+                const result = await usersCollection.findOneAndUpdate(
+                    { _id: new ObjectId(id) },
+                    { $set: { status } },
+                    { returnDocument: "after", projection: { password: 0 } }
+                );
+
+                if (!result) {
+                    return res.status(404).json({ success: false, message: "User not found." });
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: `User ${status === "blocked" ? "blocked" : "unblocked"} successfully.`,
+                    data: result,
+                });
+            } catch (err) {
+                console.error("Update status error:", err);
+                res.status(500).json({ success: false, message: "Something went wrong while updating status." });
+            }
+        });
+
+        // ---- Delete user ----
+        app.delete("/api/admin/allusers/:id", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "Invalid user id." });
+                }
+
+                const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).json({ success: false, message: "User not found." });
+                }
+
+                res.status(200).json({ success: true, message: "User deleted successfully." });
+            } catch (err) {
+                console.error("Delete user error:", err);
+                res.status(500).json({ success: false, message: "Something went wrong while deleting user." });
+            }
+        });
+
+        // Add this alongside your other admin routes.
+        // Assumes: usersCollection, TourPackageCollection, packagebookingCollection
+        // are already defined (as in your existing file), e.g.:
+        //   const usersCollection = database.collection("user");
+        //   const TourPackageCollection = database.collection("TourPackages");
+        //   const packagebookingCollection = database.collection("packageBookings");
+
+        app.get("/api/admin/overview", async (req, res) => {
+            try {
+                const [
+                    usersByRole,
+                    packagesByStatus,
+                    packagesByCategory,
+                    bookingsByStatus,
+                    revenueByMonthAgg,
+                    totalUsers,
+                    totalPackages,
+                    totalBookings,
+                    totalRevenueAgg,
+                    recentBookings,
+                ] = await Promise.all([
+                    usersCollection
+                        .aggregate([{ $group: { _id: "$role", count: { $sum: 1 } } }])
+                        .toArray(),
+
+                    TourPackageCollection
+                        .aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }])
+                        .toArray(),
+
+                    TourPackageCollection
+                        .aggregate([
+                            { $group: { _id: "$category", count: { $sum: 1 } } },
+                            { $sort: { count: -1 } },
+                        ])
+                        .toArray(),
+
+                    packagebookingCollection
+                        .aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }])
+                        .toArray(),
+
+                    // Revenue trend — only counts confirmed bookings
+                    packagebookingCollection
+                        .aggregate([
+                            { $match: { status: "confirmed" } },
+                            {
+                                $group: {
+                                    _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+                                    revenue: { $sum: "$totalAmount" },
+                                    bookings: { $sum: 1 },
+                                },
+                            },
+                            { $sort: { "_id.year": 1, "_id.month": 1 } },
+                        ])
+                        .toArray(),
+
+                    usersCollection.countDocuments({}),
+                    TourPackageCollection.countDocuments({}),
+                    packagebookingCollection.countDocuments({}),
+
+                    packagebookingCollection
+                        .aggregate([
+                            { $match: { status: "confirmed" } },
+                            { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+                        ])
+                        .toArray(),
+
+                    packagebookingCollection
+                        .find({})
+                        .sort({ createdAt: -1 })
+                        .limit(5)
+                        .toArray(),
+                ]);
+
+                const monthNames = [
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+                ];
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        totals: {
+                            users: totalUsers,
+                            packages: totalPackages,
+                            bookings: totalBookings,
+                            revenue: totalRevenueAgg[0]?.total || 0,
+                        },
+                        usersByRole: usersByRole.map((u) => ({
+                            role: u._id || "unknown",
+                            count: u.count,
+                        })),
+                        packagesByStatus: packagesByStatus.map((p) => ({
+                            status: p._id || "unknown",
+                            count: p.count,
+                        })),
+                        packagesByCategory: packagesByCategory.map((c) => ({
+                            category: c._id || "Uncategorized",
+                            count: c.count,
+                        })),
+                        bookingsByStatus: bookingsByStatus.map((b) => ({
+                            status: b._id || "unknown",
+                            count: b.count,
+                        })),
+                        revenueByMonth: revenueByMonthAgg.map((r) => ({
+                            month: `${monthNames[r._id.month - 1]} ${r._id.year}`,
+                            revenue: r.revenue,
+                            bookings: r.bookings,
+                        })),
+                        recentBookings: recentBookings.map((b) => ({
+                            _id: b._id,
+                            email: b.email,
+                            totalAmount: b.totalAmount,
+                            currency: b.currency,
+                            status: b.status,
+                            createdAt: b.createdAt,
+                        })),
+                    },
+                });
+            } catch (err) {
+                console.error("Admin overview error:", err);
+                res.status(500).json({
+                    success: false,
+                    message: "Something went wrong while loading the overview.",
+                });
+            }
+        });
+
+        // Add this alongside your other admin routes.
+        // Assumes: usersCollection, TourPackageCollection, packagebookingCollection
+        // are already defined, e.g.:
+        //   const usersCollection = database.collection("user");
+        //   const TourPackageCollection = database.collection("TourPackages");
+        //   const packagebookingCollection = database.collection("packageBookings");
+
+        // ---- Finance summary (stat cards + charts) ----
+        app.get("/api/admin/finance/summary", async (req, res) => {
+            try {
+                const [
+                    confirmedAgg,
+                    avgAgg,
+                    statusCounts,
+                    revenueByMonthAgg,
+                    revenueByAgencyAgg,
+                ] = await Promise.all([
+                    packagebookingCollection
+                        .aggregate([
+                            { $match: { status: "confirmed" } },
+                            { $group: { _id: null, total: { $sum: "$totalAmount" }, count: { $sum: 1 } } },
+                        ])
+                        .toArray(),
+
+                    packagebookingCollection
+                        .aggregate([
+                            { $match: { status: "confirmed" } },
+                            { $group: { _id: null, avg: { $avg: "$totalAmount" } } },
+                        ])
+                        .toArray(),
+
+                    packagebookingCollection
+                        .aggregate([
+                            { $group: { _id: "$status", count: { $sum: 1 }, amount: { $sum: "$totalAmount" } } },
+                        ])
+                        .toArray(),
+
+                    packagebookingCollection
+                        .aggregate([
+                            { $match: { status: "confirmed" } },
+                            {
+                                $group: {
+                                    _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+                                    revenue: { $sum: "$totalAmount" },
+                                    bookings: { $sum: 1 },
+                                },
+                            },
+                            { $sort: { "_id.year": 1, "_id.month": 1 } },
+                        ])
+                        .toArray(),
+
+                    packagebookingCollection
+                        .aggregate([
+                            { $match: { status: "confirmed" } },
+                            {
+                                $addFields: {
+                                    packageObjId: {
+                                        $convert: { input: "$packageId", to: "objectId", onError: null, onNull: null },
+                                    },
+                                },
+                            },
+                            {
+                                $lookup: {
+                                    from: "TourPackages",
+                                    localField: "packageObjId",
+                                    foreignField: "_id",
+                                    as: "packageInfo",
+                                },
+                            },
+                            { $unwind: { path: "$packageInfo", preserveNullAndEmptyArrays: true } },
+                            {
+                                $group: {
+                                    _id: { $ifNull: ["$packageInfo.agencyName", "Unknown Agency"] },
+                                    revenue: { $sum: "$totalAmount" },
+                                    bookings: { $sum: 1 },
+                                },
+                            },
+                            { $sort: { revenue: -1 } },
+                            { $limit: 8 },
+                        ])
+                        .toArray(),
+                ]);
+
+                const monthNames = [
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+                ];
+
+                const pending = statusCounts.find((s) => s._id === "pending");
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        totalRevenue: confirmedAgg[0]?.total || 0,
+                        confirmedCount: confirmedAgg[0]?.count || 0,
+                        avgBookingValue: avgAgg[0]?.avg || 0,
+                        pendingAmount: pending?.amount || 0,
+                        pendingCount: pending?.count || 0,
+                        statusBreakdown: statusCounts.map((s) => ({
+                            status: s._id || "unknown",
+                            count: s.count,
+                            amount: s.amount,
+                        })),
+                        revenueByMonth: revenueByMonthAgg.map((r) => ({
+                            month: `${monthNames[r._id.month - 1]} ${r._id.year}`,
+                            revenue: r.revenue,
+                            bookings: r.bookings,
+                        })),
+                        revenueByAgency: revenueByAgencyAgg.map((a) => ({
+                            agency: a._id,
+                            revenue: a.revenue,
+                            bookings: a.bookings,
+                        })),
+                    },
+                });
+            } catch (err) {
+                console.error("Finance summary error:", err);
+                res.status(500).json({
+                    success: false,
+                    message: "Something went wrong while loading the finance summary.",
+                });
+            }
+        });
+
+        // ---- Transactions (paginated, filterable, searchable) ----
+        app.get("/api/admin/finance/transactions", async (req, res) => {
+            try {
+                const page = Math.max(parseInt(req.query.page) || 1, 1);
+                const limit = Math.max(parseInt(req.query.limit) || 10, 1);
+                const skip = (page - 1) * limit;
+                const { status, search } = req.query;
+
+                const match = {};
+                if (status && status !== "all") {
+                    match.status = status;
+                }
+                if (search) {
+                    match.$or = [
+                        { email: { $regex: search, $options: "i" } },
+                        { invoiceId: { $regex: search, $options: "i" } },
+                    ];
+                }
+
+                const pipeline = [
+                    { $match: match },
+                    { $sort: { createdAt: -1 } },
+                    { $skip: skip },
+                    { $limit: limit },
+                    {
+                        $addFields: {
+                            packageObjId: {
+                                $convert: { input: "$packageId", to: "objectId", onError: null, onNull: null },
+                            },
+                        },
+                    },
+                    {
+                        $lookup: {
+                            from: "TourPackages",
+                            localField: "packageObjId",
+                            foreignField: "_id",
+                            as: "packageInfo",
+                        },
+                    },
+                    { $unwind: { path: "$packageInfo", preserveNullAndEmptyArrays: true } },
+                    {
+                        $project: {
+                            invoiceId: 1,
+                            sessionId: 1,
+                            email: 1,
+                            totalAmount: 1,
+                            currency: 1,
+                            status: 1,
+                            createdAt: 1,
+                            adultCount: 1,
+                            childCount: 1,
+                            packageTitle: { $ifNull: ["$packageInfo.title", "Unknown package"] },
+                            agencyName: { $ifNull: ["$packageInfo.agencyName", "Unknown agency"] },
+                        },
+                    },
+                ];
+
+                const [transactions, total] = await Promise.all([
+                    packagebookingCollection.aggregate(pipeline).toArray(),
+                    packagebookingCollection.countDocuments(match),
+                ]);
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        transactions,
+                        total,
+                        page,
+                        limit,
+                        totalPages: Math.ceil(total / limit),
+                    },
+                });
+            } catch (err) {
+                console.error("Fetch transactions error:", err);
+                res.status(500).json({
+                    success: false,
+                    message: "Something went wrong while fetching transactions.",
+                });
+            }
+        });
 
 
 
