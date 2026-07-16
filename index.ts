@@ -93,10 +93,16 @@ async function run() {
             }
             next()
         }
+        const veryifyagency = async (req: Request, res: Response, next: NextFunction) => {
+            if (req.user?.role !== "agency") {
+                return res.status(403).send({ message: "forbiden access" })
+            }
+            next()
+        }
 
 
 
-        app.post("/api/agency/packages", async (req: Request, res: Response) => {
+        app.post("/api/agency/packages", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             console.log("Received request to add package:", req.body);
             try {
                 const body = req.body;
@@ -195,7 +201,7 @@ async function run() {
 
         // const TourPackageCollection = database.collection("TourPackages");
 
-        app.get("/api/agency/packages", async (req: Request, res: Response) => {
+        app.get("/api/agency/packages", verifyToken, veryifyagency, async (req: Request, res: Response) => {
 
             try {
                 const {
@@ -353,6 +359,61 @@ async function run() {
             }
         });
 
+        app.post("/api/bookings", async (req: Request, res: Response) => {
+            console.log("Received request to save booking:", req.body);
+            try {
+                const body = req.body;
+
+                const required = ["sessionId", "packageId", "email"];
+                const missing = required.filter((field) => !body[field]);
+                if (missing.length) {
+                    return res.status(400).json({
+                        message: `Missing required field(s): ${missing.join(", ")}`,
+                    });
+                }
+
+                // Duplicate guard — same sessionId already saved? Don't insert again.
+                const existing = await packagebookingCollection.findOne({ sessionId: body.sessionId });
+                if (existing) {
+                    return res.status(200).json({
+                        message: "Booking already recorded.",
+                        data: existing,
+                    });
+                }
+
+                const newBookingData = {
+                    sessionId: body.sessionId,
+                    invoiceId: body.invoiceId || body.sessionId,
+                    packageId: body.packageId,
+                    agencyId: body.agencyId,
+                    travelers: body.travelerId,
+                    email: body.email,
+                    adultCount: Number(body.adultCount) || 0,
+                    childCount: Number(body.childCount) || 0,
+                    totalMale: Number(body.totalMale) || 0,
+                    totalFemale: Number(body.totalFemale) || 0,
+                    totalChildPrice: Number(body.totalChildPrice) || 0,
+                    totalAmount: Number(body.totalAmount) || 0,
+                    currency: body.currency || "usd",
+                    status: "confirmed",
+                    createdAt: new Date(),
+                };
+
+                const result = await packagebookingCollection.insertOne(newBookingData);
+
+                return res.status(201).json({
+                    message: "Booking saved successfully.",
+                    data: {
+                        _id: result.insertedId,
+                        ...newBookingData,
+                    },
+                });
+            } catch (err: any) {
+                console.error("Save booking error:", err);
+                return res.status(500).json({ message: "Something went wrong while saving the booking." });
+            }
+        });
+
 
         // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
         app.get("/api/agency/packages/:id", async (req: Request, res: Response) => {
@@ -391,7 +452,7 @@ async function run() {
             }
         });
 
-        app.patch("/api/agency/packages/:id/status", async (req: Request, res: Response) => {
+        app.patch("/api/agency/packages/:id/status", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { newStatus, userid } = req.body; // userstatus আর client থেকে নেওয়া হচ্ছে না
@@ -474,11 +535,8 @@ async function run() {
                 });
             }
         });
-        /**
-         * DELETE /api/agency/packages/:id
-         * প্যাকেজ পুরোপুরি ডিলিট করার জন্য
-         */
-        app.delete("/api/agency/packages/:id", async (req: Request, res: Response) => {
+
+        app.delete("/api/agency/packages/:id", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -514,11 +572,8 @@ async function run() {
             }
         });
 
-        /**
-         * GET /api/agency/profile/:id
-         * এজেন্সির প্রোফাইল ডাটা user collection থেকে ফেচ করে
-         */
-        app.get("/api/agency/profile/:id", async (req: Request, res: Response) => {
+
+        app.get("/api/agency/profile/:id", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -555,7 +610,7 @@ async function run() {
             }
         });
 
-        app.patch("/api/agency/profile/:id", async (req: Request, res: Response) => {
+        app.patch("/api/agency/profile/:id", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -625,197 +680,7 @@ async function run() {
             }
         });
 
-        //admin panel er jonno sob package dekhate hobe tai status filter lagbe na
-
-        app.get("/api/admin/users", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
-            try {
-                const {
-                    role,
-                    status = "pending",
-                    search = "",
-                    page = 1,
-                    limit = 5,
-                } = req.query;
-
-                // role না দিলে এখানেই আটকে দিচ্ছি, যাতে ভুলে সব ইউজার (agency + traveler + admin) একসাথে না চলে আসে
-                if (!role) {
-                    return res.status(400).send({
-                        success: false,
-                        message: "role query param is required (e.g. role=agency or role=traveler)",
-                    });
-                }
-
-                const query: Record<string, any> = { role, status };
-
-                // সার্চ: email দিয়ে partial match, অথবা _id দিয়ে exact match
-                if (search && (search as string).trim() !== "") {
-                    const trimmedSearch = (search as string).trim();
-                    const searchConditions: Record<string, any>[] = [
-                        { email: { $regex: trimmedSearch, $options: "i" } },
-                    ];
-
-                    // যদি সার্চ স্ট্রিংটা একটা ভ্যালিড ObjectId হয়, তাহলে _id দিয়েও ম্যাচ করানো হবে
-                    if (ObjectId.isValid(trimmedSearch)) {
-                        searchConditions.push({ _id: new ObjectId(trimmedSearch) });
-                    }
-
-                    query.$or = searchConditions;
-                }
-
-                const skip = (Number(page) - 1) * Number(limit);
-
-                const users = await usersCollection
-                    .find(query)
-                    .sort({ createdAt: -1 })
-                    .skip(skip)
-                    .limit(Number(limit))
-                    .toArray();
-
-                const total = await usersCollection.countDocuments(query);
-
-                // Tabs এর পাশে count দেখানোর জন্য — role অনুযায়ী প্রতিটা status এর সংখ্যা
-                // (নোট: সার্চ করলেও count গুলো role-ভিত্তিক পুরো ডাটাসেটের উপর ভিত্তি করে দেখানো হচ্ছে,
-                // Tabs count যেন সার্চ টাইপ করার সময় লাফালাফি না করে)
-                const statusCountsAgg = await usersCollection
-                    .aggregate([
-                        { $match: { role } },
-                        { $group: { _id: "$status", count: { $sum: 1 } } },
-                    ])
-                    .toArray();
-
-                const statusCounts: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
-                statusCountsAgg.forEach((item) => {
-                    statusCounts[item._id as string] = item.count;
-                });
-
-                res.send({
-                    success: true,
-                    data: users,
-                    meta: {
-                        total,
-                        page: Number(page),
-                        limit: Number(limit),
-                        totalPages: Math.ceil(total / Number(limit)),
-                    },
-                    statusCounts,
-                });
-            } catch (error: any) {
-                console.error("Error fetching admin users:", error);
-                res.status(500).send({
-                    success: false,
-                    message: "Failed to fetch users",
-                    error: error.message,
-                });
-            }
-        });
-
-        app.patch("/api/admin/users/:id/status", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
-            try {
-                const { id } = req.params;
-                const { status } = req.body;
-
-                const allowedStatuses = ["pending", "approved", "rejected"];
-                if (!status || !allowedStatuses.includes(status)) {
-                    return res.status(400).send({
-                        success: false,
-                        message: `status must be one of: ${allowedStatuses.join(", ")}`,
-                    });
-                }
-
-                if (!ObjectId.isValid(id)) {
-                    return res.status(400).send({
-                        success: false,
-                        message: "Invalid user id",
-                    });
-                }
-
-                const result = await usersCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    {
-                        $set: {
-                            status,
-                            updatedAt: new Date(),
-                        },
-                    }
-                );
-
-                if (result.matchedCount === 0) {
-                    return res.status(404).send({
-                        success: false,
-                        message: "User not found",
-                    });
-                }
-
-                res.send({
-                    success: true,
-                    message: `Status updated to ${status}`,
-                });
-            } catch (error: any) {
-                console.error("Error updating user status:", error);
-                res.status(500).send({
-                    success: false,
-                    message: "Failed to update status",
-                    error: error.message,
-                });
-            }
-        });
-
-        app.post("/api/bookings", async (req: Request, res: Response) => {
-            console.log("Received request to save booking:", req.body);
-            try {
-                const body = req.body;
-
-                const required = ["sessionId", "packageId", "email"];
-                const missing = required.filter((field) => !body[field]);
-                if (missing.length) {
-                    return res.status(400).json({
-                        message: `Missing required field(s): ${missing.join(", ")}`,
-                    });
-                }
-
-                // Duplicate guard — same sessionId already saved? Don't insert again.
-                const existing = await packagebookingCollection.findOne({ sessionId: body.sessionId });
-                if (existing) {
-                    return res.status(200).json({
-                        message: "Booking already recorded.",
-                        data: existing,
-                    });
-                }
-
-                const newBookingData = {
-                    sessionId: body.sessionId,
-                    invoiceId: body.invoiceId || body.sessionId,
-                    packageId: body.packageId,
-                    agencyId: body.agencyId,
-                    travelers: body.travelerId,
-                    email: body.email,
-                    adultCount: Number(body.adultCount) || 0,
-                    childCount: Number(body.childCount) || 0,
-                    totalMale: Number(body.totalMale) || 0,
-                    totalFemale: Number(body.totalFemale) || 0,
-                    totalChildPrice: Number(body.totalChildPrice) || 0,
-                    totalAmount: Number(body.totalAmount) || 0,
-                    currency: body.currency || "usd",
-                    status: "confirmed",
-                    createdAt: new Date(),
-                };
-
-                const result = await packagebookingCollection.insertOne(newBookingData);
-
-                return res.status(201).json({
-                    message: "Booking saved successfully.",
-                    data: {
-                        _id: result.insertedId,
-                        ...newBookingData,
-                    },
-                });
-            } catch (err: any) {
-                console.error("Save booking error:", err);
-                return res.status(500).json({ message: "Something went wrong while saving the booking." });
-            }
-        });
-
-        app.get("/api/agency/:agencyId/bookings-summary", async (req: Request, res: Response) => {
+        app.get("/api/agency/:agencyId/bookings-summary", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
 
@@ -855,7 +720,7 @@ async function run() {
             }
         });
 
-        app.get("/api/agency/:agencyId/earnings", async (req: Request, res: Response) => {
+        app.get("/api/agency/:agencyId/earnings", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
 
@@ -966,7 +831,7 @@ async function run() {
             }
         });
 
-        app.get("/api/agency/:agencyId/overview", async (req: Request, res: Response) => {
+        app.get("/api/agency/:agencyId/overview", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
 
@@ -1115,7 +980,7 @@ async function run() {
         });
 
         // 2. List inquiries for an agency (dashboard)
-        app.get("/api/agency/:agencyId/inquiries", async (req: Request, res: Response) => {
+        app.get("/api/agency/:agencyId/inquiries", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { agencyId } = req.params;
                 const { status } = req.query; // optional filter: new | contacted | closed
@@ -1148,7 +1013,7 @@ async function run() {
         });
 
         // 3. Update inquiry status
-        app.patch("/api/inquiries/:id/status", async (req: Request, res: Response) => {
+        app.patch("/api/inquiries/:id/status", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body;
@@ -1372,15 +1237,6 @@ async function run() {
             }
         });
 
-        // usersCollection = database.collection("user");  // আগে থেকে define করা থাকলে এই লাইন লাগবে না
-
-        // ============================================================
-        // PATCH /api/traveler/profile/:travelerId
-        // name, phone, and avatarUrl are editable here — email, role,
-        // status, emailVerified stay server-controlled and are ignored
-        // even if sent in the body.
-        // ============================================================
-
         app.get("/api/traveler/profile/:travelerId", async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
@@ -1458,6 +1314,139 @@ async function run() {
                 return res
                     .status(500)
                     .json({ success: false, message: "Something went wrong while saving changes." });
+            }
+        });
+
+        app.get("/api/admin/users", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
+            try {
+                const {
+                    role,
+                    status = "pending",
+                    search = "",
+                    page = 1,
+                    limit = 5,
+                } = req.query;
+
+                // role না দিলে এখানেই আটকে দিচ্ছি, যাতে ভুলে সব ইউজার (agency + traveler + admin) একসাথে না চলে আসে
+                if (!role) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "role query param is required (e.g. role=agency or role=traveler)",
+                    });
+                }
+
+                const query: Record<string, any> = { role, status };
+
+                // সার্চ: email দিয়ে partial match, অথবা _id দিয়ে exact match
+                if (search && (search as string).trim() !== "") {
+                    const trimmedSearch = (search as string).trim();
+                    const searchConditions: Record<string, any>[] = [
+                        { email: { $regex: trimmedSearch, $options: "i" } },
+                    ];
+
+                    // যদি সার্চ স্ট্রিংটা একটা ভ্যালিড ObjectId হয়, তাহলে _id দিয়েও ম্যাচ করানো হবে
+                    if (ObjectId.isValid(trimmedSearch)) {
+                        searchConditions.push({ _id: new ObjectId(trimmedSearch) });
+                    }
+
+                    query.$or = searchConditions;
+                }
+
+                const skip = (Number(page) - 1) * Number(limit);
+
+                const users = await usersCollection
+                    .find(query)
+                    .sort({ createdAt: -1 })
+                    .skip(skip)
+                    .limit(Number(limit))
+                    .toArray();
+
+                const total = await usersCollection.countDocuments(query);
+
+                // Tabs এর পাশে count দেখানোর জন্য — role অনুযায়ী প্রতিটা status এর সংখ্যা
+                // (নোট: সার্চ করলেও count গুলো role-ভিত্তিক পুরো ডাটাসেটের উপর ভিত্তি করে দেখানো হচ্ছে,
+                // Tabs count যেন সার্চ টাইপ করার সময় লাফালাফি না করে)
+                const statusCountsAgg = await usersCollection
+                    .aggregate([
+                        { $match: { role } },
+                        { $group: { _id: "$status", count: { $sum: 1 } } },
+                    ])
+                    .toArray();
+
+                const statusCounts: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+                statusCountsAgg.forEach((item) => {
+                    statusCounts[item._id as string] = item.count;
+                });
+
+                res.send({
+                    success: true,
+                    data: users,
+                    meta: {
+                        total,
+                        page: Number(page),
+                        limit: Number(limit),
+                        totalPages: Math.ceil(total / Number(limit)),
+                    },
+                    statusCounts,
+                });
+            } catch (error: any) {
+                console.error("Error fetching admin users:", error);
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to fetch users",
+                    error: error.message,
+                });
+            }
+        });
+
+        app.patch("/api/admin/users/:id/status", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
+            try {
+                const { id } = req.params;
+                const { status } = req.body;
+
+                const allowedStatuses = ["pending", "approved", "rejected"];
+                if (!status || !allowedStatuses.includes(status)) {
+                    return res.status(400).send({
+                        success: false,
+                        message: `status must be one of: ${allowedStatuses.join(", ")}`,
+                    });
+                }
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "Invalid user id",
+                    });
+                }
+
+                const result = await usersCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            status,
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({
+                        success: false,
+                        message: "User not found",
+                    });
+                }
+
+                res.send({
+                    success: true,
+                    message: `Status updated to ${status}`,
+                });
+            } catch (error: any) {
+                console.error("Error updating user status:", error);
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to update status",
+                    error: error.message,
+                });
             }
         });
 
@@ -1721,13 +1710,6 @@ async function run() {
                 });
             }
         });
-
-        // Add this alongside your other admin routes.
-        // Assumes: usersCollection, TourPackageCollection, packagebookingCollection
-        // are already defined, e.g.:
-        //   const usersCollection = database.collection("user");
-        //   const TourPackageCollection = database.collection("TourPackages");
-        //   const packagebookingCollection = database.collection("packageBookings");
 
         // ---- Finance summary (stat cards + charts) ----
         app.get("/api/admin/finance/summary", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
