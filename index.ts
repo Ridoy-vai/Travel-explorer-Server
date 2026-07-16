@@ -68,15 +68,15 @@ async function run() {
                 // const decoded = jwt.verify(token, process.env.JWT_SECRET as string);
                 const query = { token: token }
                 const session = await sessionCollection.findOne(query)
-                console.log(session)
+                // console.log(session)
                 const userId = session.userId;
-                console.log(userId)
+                // console.log(userId)
                 // (req as Request & { user: any }).user = decoded;
                 const userQuery = {
                     _id: userId
                 }
                 const user = await usersCollection.findOne(userQuery)
-                console.log("user of the session", user)
+                // console.log("user of the session", user)
                 req.user = user
                 next();
             } catch {
@@ -99,9 +99,238 @@ async function run() {
             }
             next()
         }
+        const veryifytraveler = async (req: Request, res: Response, next: NextFunction) => {
+            if (req.user?.role !== "traveler") {
+                return res.status(403).send({ message: "forbiden access" })
+            }
+            next()
+        }
 
 
+        // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
+        app.get("/api/packages", async (req: Request, res: Response) => {
+            try {
+                const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+                const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 12, 1), 50);
+                const skip = (page - 1) * limit;
 
+                const filter: Record<string, any> = { status: "published" };
+
+                if (req.query.category) {
+                    filter.category = req.query.category;
+                }
+                if (req.query.destination) {
+                    filter.destination = { $regex: req.query.destination, $options: "i" };
+                }
+                if (req.query.search) {
+                    filter.$or = [
+                        { title: { $regex: req.query.search, $options: "i" } },
+                        { destination: { $regex: req.query.search, $options: "i" } },
+                        { shortDescription: { $regex: req.query.search, $options: "i" } },
+                        { tags: { $regex: req.query.search, $options: "i" } },
+                    ];
+                }
+                if (req.query.minPrice || req.query.maxPrice) {
+                    filter.basePrice = {};
+                    if (req.query.minPrice) filter.basePrice.$gte = Number(req.query.minPrice);
+                    if (req.query.maxPrice) filter.basePrice.$lte = Number(req.query.maxPrice);
+                }
+
+                // ---------------- ✅ Duration ফিল্টার (নতুন) ----------------
+                // "1-3", "4-6", "7+" এই ফরম্যাটে ফ্রন্টএন্ড থেকে আসবে
+                if (req.query.duration) {
+                    const durationRanges: Record<string, any> = {
+                        "1-3": { $gte: 1, $lte: 3 },
+                        "4-6": { $gte: 4, $lte: 6 },
+                        "7+": { $gte: 7 },
+                    };
+                    const range = durationRanges[req.query.duration as string];
+                    if (range) {
+                        filter.durationDays = range;
+                    }
+                }
+
+                const sortMap: Record<string, any> = {
+                    newest: { createdAt: -1 },
+                    priceLowToHigh: { basePrice: 1 },
+                    priceHighToLow: { basePrice: -1 },
+                };
+                const sort = sortMap[req.query.sort as string] || sortMap.newest;
+
+                const result = await TourPackageCollection.find(filter)
+                    .sort(sort)
+                    .skip(skip)
+                    .limit(limit)
+                    .toArray();
+
+                const totalItems = await TourPackageCollection.countDocuments(filter);
+
+                const totalPages = Math.ceil(totalItems / limit) || 1;
+                const hasMore = page < totalPages;
+
+                res.status(200).json({
+                    success: true,
+                    data: result,
+                    pagination: {
+                        currentPage: page,
+                        totalPages,
+                        totalItems,
+                        limit,
+                        hasMore,
+                    },
+                });
+            } catch (error: any) {
+                console.error("GET /api/packages error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to fetch packages",
+                });
+            }
+        });
+
+        // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
+        app.get("/api/packages/categories", async (req: Request, res: Response) => {
+            try {
+                const categories = await TourPackageCollection.distinct("category", {
+                    status: "published",
+                });
+                res.status(200).json({ success: true, data: categories });
+            } catch (error: any) {
+                console.error("GET /api/packages/categories error:", error);
+                res.status(500).json({ success: false, message: "Failed to fetch categories" });
+            }
+        });
+
+        // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
+        app.post("/api/bookings", async (req: Request, res: Response) => {
+            console.log("Received request to save booking:", req.body);
+            try {
+                const body = req.body;
+
+                const required = ["sessionId", "packageId", "email"];
+                const missing = required.filter((field) => !body[field]);
+                if (missing.length) {
+                    return res.status(400).json({
+                        message: `Missing required field(s): ${missing.join(", ")}`,
+                    });
+                }
+
+                // Duplicate guard — same sessionId already saved? Don't insert again.
+                const existing = await packagebookingCollection.findOne({ sessionId: body.sessionId });
+                if (existing) {
+                    return res.status(200).json({
+                        message: "Booking already recorded.",
+                        data: existing,
+                    });
+                }
+
+                const newBookingData = {
+                    sessionId: body.sessionId,
+                    invoiceId: body.invoiceId || body.sessionId,
+                    packageId: body.packageId,
+                    agencyId: body.agencyId,
+                    travelers: body.travelerId,
+                    email: body.email,
+                    adultCount: Number(body.adultCount) || 0,
+                    childCount: Number(body.childCount) || 0,
+                    totalMale: Number(body.totalMale) || 0,
+                    totalFemale: Number(body.totalFemale) || 0,
+                    totalChildPrice: Number(body.totalChildPrice) || 0,
+                    totalAmount: Number(body.totalAmount) || 0,
+                    currency: body.currency || "usd",
+                    status: "confirmed",
+                    createdAt: new Date(),
+                };
+
+                const result = await packagebookingCollection.insertOne(newBookingData);
+
+                return res.status(201).json({
+                    message: "Booking saved successfully.",
+                    data: {
+                        _id: result.insertedId,
+                        ...newBookingData,
+                    },
+                });
+            } catch (err: any) {
+                console.error("Save booking error:", err);
+                return res.status(500).json({ message: "Something went wrong while saving the booking." });
+            }
+        });
+
+        // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
+        app.get("/api/agency/packages/:id", async (req: Request, res: Response) => {
+            try {
+                const { id } = req.params;
+                console.log("Fetching package details for id:", id);
+                // if (!ObjectId.isValid(id)) {
+                //     return res.status(400).send({
+                //         success: false,
+                //         message: "Invalid package id",
+                //     });
+                // }
+
+                const packageDetails = await TourPackageCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                if (!packageDetails) {
+                    return res.status(404).send({
+                        success: false,
+                        message: "Package not found",
+                    });
+                }
+
+                res.send({
+                    success: true,
+                    data: packageDetails,
+                });
+            } catch (error: any) {
+                console.error("Error fetching package details:", error);
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to fetch package details",
+                    error: error.message,
+                });
+            }
+        });
+
+        // 1. Create inquiry (customer-facing)
+        app.post("/api/inquiries", async (req: Request, res: Response) => {
+            try {
+                const body = req.body;
+
+                const required = ["name", "email", "phone", "packageId", "agencyId"];
+                const missing = required.filter((field) => !body[field]);
+                if (missing.length) {
+                    return res.status(400).json({
+                        message: `Missing required field(s): ${missing.join(", ")}`,
+                    });
+                }
+
+                const newInquiry = {
+                    agencyId: body.agencyId,
+                    packageId: body.packageId,
+                    name: body.name,
+                    email: body.email,
+                    phone: body.phone,
+                    message: body.message || "",
+                    status: "new", // new | contacted | closed
+                    createdAt: new Date(),
+                };
+
+                const result = await inquiryCollection.insertOne(newInquiry);
+
+                return res.status(201).json({
+                    message: "Inquiry submitted successfully.",
+                    data: { _id: result.insertedId, ...newInquiry },
+                });
+            } catch (err: any) {
+                console.error("Create inquiry error:", err);
+                return res.status(500).json({ message: "Something went wrong while submitting inquiry." });
+            }
+        });
+
+        // agency api start ########################################
         app.post("/api/agency/packages", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             console.log("Received request to add package:", req.body);
             try {
@@ -199,8 +428,6 @@ async function run() {
             }
         });
 
-        // const TourPackageCollection = database.collection("TourPackages");
-
         app.get("/api/agency/packages", verifyToken, veryifyagency, async (req: Request, res: Response) => {
 
             try {
@@ -259,194 +486,6 @@ async function run() {
                 res.status(500).send({
                     success: false,
                     message: "Failed to fetch packages",
-                    error: error.message,
-                });
-            }
-        });
-
-
-        // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
-        app.get("/api/packages", async (req: Request, res: Response) => {
-            try {
-                const page = Math.max(parseInt(req.query.page as string) || 1, 1);
-                const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 12, 1), 50);
-                const skip = (page - 1) * limit;
-
-                const filter: Record<string, any> = { status: "published" };
-
-                if (req.query.category) {
-                    filter.category = req.query.category;
-                }
-                if (req.query.destination) {
-                    filter.destination = { $regex: req.query.destination, $options: "i" };
-                }
-                if (req.query.search) {
-                    filter.$or = [
-                        { title: { $regex: req.query.search, $options: "i" } },
-                        { destination: { $regex: req.query.search, $options: "i" } },
-                        { shortDescription: { $regex: req.query.search, $options: "i" } },
-                        { tags: { $regex: req.query.search, $options: "i" } },
-                    ];
-                }
-                if (req.query.minPrice || req.query.maxPrice) {
-                    filter.basePrice = {};
-                    if (req.query.minPrice) filter.basePrice.$gte = Number(req.query.minPrice);
-                    if (req.query.maxPrice) filter.basePrice.$lte = Number(req.query.maxPrice);
-                }
-
-                // ---------------- ✅ Duration ফিল্টার (নতুন) ----------------
-                // "1-3", "4-6", "7+" এই ফরম্যাটে ফ্রন্টএন্ড থেকে আসবে
-                if (req.query.duration) {
-                    const durationRanges: Record<string, any> = {
-                        "1-3": { $gte: 1, $lte: 3 },
-                        "4-6": { $gte: 4, $lte: 6 },
-                        "7+": { $gte: 7 },
-                    };
-                    const range = durationRanges[req.query.duration as string];
-                    if (range) {
-                        filter.durationDays = range;
-                    }
-                }
-
-                const sortMap: Record<string, any> = {
-                    newest: { createdAt: -1 },
-                    priceLowToHigh: { basePrice: 1 },
-                    priceHighToLow: { basePrice: -1 },
-                };
-                const sort = sortMap[req.query.sort as string] || sortMap.newest;
-
-                const result = await TourPackageCollection.find(filter)
-                    .sort(sort)
-                    .skip(skip)
-                    .limit(limit)
-                    .toArray();
-
-                const totalItems = await TourPackageCollection.countDocuments(filter);
-
-                const totalPages = Math.ceil(totalItems / limit) || 1;
-                const hasMore = page < totalPages;
-
-                res.status(200).json({
-                    success: true,
-                    data: result,
-                    pagination: {
-                        currentPage: page,
-                        totalPages,
-                        totalItems,
-                        limit,
-                        hasMore,
-                    },
-                });
-            } catch (error: any) {
-                console.error("GET /api/packages error:", error);
-                res.status(500).json({
-                    success: false,
-                    message: "Failed to fetch packages",
-                });
-            }
-        });
-
-        // ---------------- ✅ ক্যাটাগরি লিস্ট (dropdown এর জন্য, distinct values) ----------------
-        app.get("/api/packages/categories", async (req: Request, res: Response) => {
-            try {
-                const categories = await TourPackageCollection.distinct("category", {
-                    status: "published",
-                });
-                res.status(200).json({ success: true, data: categories });
-            } catch (error: any) {
-                console.error("GET /api/packages/categories error:", error);
-                res.status(500).json({ success: false, message: "Failed to fetch categories" });
-            }
-        });
-
-        app.post("/api/bookings", async (req: Request, res: Response) => {
-            console.log("Received request to save booking:", req.body);
-            try {
-                const body = req.body;
-
-                const required = ["sessionId", "packageId", "email"];
-                const missing = required.filter((field) => !body[field]);
-                if (missing.length) {
-                    return res.status(400).json({
-                        message: `Missing required field(s): ${missing.join(", ")}`,
-                    });
-                }
-
-                // Duplicate guard — same sessionId already saved? Don't insert again.
-                const existing = await packagebookingCollection.findOne({ sessionId: body.sessionId });
-                if (existing) {
-                    return res.status(200).json({
-                        message: "Booking already recorded.",
-                        data: existing,
-                    });
-                }
-
-                const newBookingData = {
-                    sessionId: body.sessionId,
-                    invoiceId: body.invoiceId || body.sessionId,
-                    packageId: body.packageId,
-                    agencyId: body.agencyId,
-                    travelers: body.travelerId,
-                    email: body.email,
-                    adultCount: Number(body.adultCount) || 0,
-                    childCount: Number(body.childCount) || 0,
-                    totalMale: Number(body.totalMale) || 0,
-                    totalFemale: Number(body.totalFemale) || 0,
-                    totalChildPrice: Number(body.totalChildPrice) || 0,
-                    totalAmount: Number(body.totalAmount) || 0,
-                    currency: body.currency || "usd",
-                    status: "confirmed",
-                    createdAt: new Date(),
-                };
-
-                const result = await packagebookingCollection.insertOne(newBookingData);
-
-                return res.status(201).json({
-                    message: "Booking saved successfully.",
-                    data: {
-                        _id: result.insertedId,
-                        ...newBookingData,
-                    },
-                });
-            } catch (err: any) {
-                console.error("Save booking error:", err);
-                return res.status(500).json({ message: "Something went wrong while saving the booking." });
-            }
-        });
-
-
-        // no need jwt verification for now, because this is just a test project and not a production-ready application. In a real-world scenario, you would implement proper authentication and authorization mechanisms.
-        app.get("/api/agency/packages/:id", async (req: Request, res: Response) => {
-            try {
-                const { id } = req.params;
-                console.log("Fetching package details for id:", id);
-                // if (!ObjectId.isValid(id)) {
-                //     return res.status(400).send({
-                //         success: false,
-                //         message: "Invalid package id",
-                //     });
-                // }
-
-                const packageDetails = await TourPackageCollection.findOne({
-                    _id: new ObjectId(id),
-                });
-
-                if (!packageDetails) {
-                    return res.status(404).send({
-                        success: false,
-                        message: "Package not found",
-                    });
-                }
-
-                res.send({
-                    success: true,
-                    data: packageDetails,
-                });
-            } catch (error: any) {
-                console.error("Error fetching package details:", error);
-                res.status(500).send({
-                    success: false,
-                    message: "Failed to fetch package details",
                     error: error.message,
                 });
             }
@@ -571,7 +610,6 @@ async function run() {
                 });
             }
         });
-
 
         app.get("/api/agency/profile/:id", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
@@ -943,42 +981,6 @@ async function run() {
             }
         });
 
-        // 1. Create inquiry (customer-facing)
-        app.post("/api/inquiries", async (req: Request, res: Response) => {
-            try {
-                const body = req.body;
-
-                const required = ["name", "email", "phone", "packageId", "agencyId"];
-                const missing = required.filter((field) => !body[field]);
-                if (missing.length) {
-                    return res.status(400).json({
-                        message: `Missing required field(s): ${missing.join(", ")}`,
-                    });
-                }
-
-                const newInquiry = {
-                    agencyId: body.agencyId,
-                    packageId: body.packageId,
-                    name: body.name,
-                    email: body.email,
-                    phone: body.phone,
-                    message: body.message || "",
-                    status: "new", // new | contacted | closed
-                    createdAt: new Date(),
-                };
-
-                const result = await inquiryCollection.insertOne(newInquiry);
-
-                return res.status(201).json({
-                    message: "Inquiry submitted successfully.",
-                    data: { _id: result.insertedId, ...newInquiry },
-                });
-            } catch (err: any) {
-                console.error("Create inquiry error:", err);
-                return res.status(500).json({ message: "Something went wrong while submitting inquiry." });
-            }
-        });
-
         // 2. List inquiries for an agency (dashboard)
         app.get("/api/agency/:agencyId/inquiries", verifyToken, veryifyagency, async (req: Request, res: Response) => {
             try {
@@ -1039,7 +1041,8 @@ async function run() {
             }
         });
 
-        app.get("/api/travelers/:travelerId/bookings", async (req: Request, res: Response) => {
+        //traveler api start ###########################################
+        app.get("/api/travelers/:travelerId/bookings", verifyToken, veryifytraveler, async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
 
@@ -1073,7 +1076,7 @@ async function run() {
             }
         });
 
-        app.get("/api/travelers/:travelerId/dashboard-overview", async (req: Request, res: Response) => {
+        app.get("/api/travelers/:travelerId/dashboard-overview", verifyToken, veryifytraveler, async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
 
@@ -1237,7 +1240,7 @@ async function run() {
             }
         });
 
-        app.get("/api/traveler/profile/:travelerId", async (req: Request, res: Response) => {
+        app.get("/api/traveler/profile/:travelerId", verifyToken, veryifytraveler, async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
 
@@ -1272,7 +1275,8 @@ async function run() {
                 });
             }
         });
-        app.patch("/api/traveler/profile/:travelerId", async (req: Request, res: Response) => {
+
+        app.patch("/api/traveler/profile/:travelerId", verifyToken, veryifytraveler, async (req: Request, res: Response) => {
             try {
                 const { travelerId } = req.params;
                 const { name, phone, avatarUrl } = req.body;
@@ -1317,6 +1321,7 @@ async function run() {
             }
         });
 
+        //admin api start #######################################
         app.get("/api/admin/users", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const {
@@ -1911,16 +1916,6 @@ async function run() {
 
 
 
-
-
-
-
-
-
-
-
-
-
         // Send a ping to confirm a successful connection
         // await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
@@ -1930,12 +1925,6 @@ async function run() {
     }
 }
 run().catch(console.dir);
-
-
-app.get("/api/test", (req, res) => {
-    res.send("API Test OK");
-});
-
 
 app.get("/", (req: Request, res: Response) => {
     res.send("Travel-Bd is running!");
