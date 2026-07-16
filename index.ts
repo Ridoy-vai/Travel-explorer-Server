@@ -1,8 +1,8 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { MongoClient, ServerApiVersion, ObjectId, Collection, Document } from "mongodb";
-
+import jwt from "jsonwebtoken";
 dotenv.config();
 
 const app = express();
@@ -22,6 +22,9 @@ app.use(express.urlencoded({ limit: "10mb", extended: true }));
 const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI as string;
 
+
+
+
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
     serverApi: {
@@ -40,7 +43,58 @@ async function run() {
         const usersCollection: Collection<Document> = database.collection("user");
         const packagebookingCollection: Collection<Document> = database.collection("packageBookings");
         const inquiryCollection: Collection<Document> = database.collection("inquiries");
+        const sessionCollection: Collection<Document> = database.collection("session");
         // const bookingsCollection = database.collection("bookings");
+
+        // veryfy releted 
+
+        const verifyToken = async (req: Request, res: Response, next: NextFunction) => {
+            const authorization = req.headers.authorization;
+            console.log(authorization)
+            if (!authorization) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Unauthorized access",
+                });
+            }
+
+            const token = authorization.split(" ")[1];
+
+            // if(!token){
+
+            // }
+
+            try {
+                // const decoded = jwt.verify(token, process.env.JWT_SECRET as string);
+                const query = { token: token }
+                const session = await sessionCollection.findOne(query)
+                console.log(session)
+                const userId = session.userId;
+                console.log(userId)
+                // (req as Request & { user: any }).user = decoded;
+                const userQuery = {
+                    _id: userId
+                }
+                const user = await usersCollection.findOne(userQuery)
+                console.log("user of the session", user)
+                req.user = user
+                next();
+            } catch {
+                return res.status(401).json({
+                    success: false,
+                    message: "Invalid or expired token",
+                });
+            }
+        };
+
+        const veryifyadmin = async (req: Request, res: Response, next: NextFunction) => {
+            if (req.user?.role !== "admin") {
+                return res.status(403).send({ message: "forbiden access" })
+            }
+            next()
+        }
+
+
 
         app.post("/api/agency/packages", async (req: Request, res: Response) => {
             console.log("Received request to add package:", req.body);
@@ -573,7 +627,7 @@ async function run() {
 
         //admin panel er jonno sob package dekhate hobe tai status filter lagbe na
 
-        app.get("/api/admin/users", async (req: Request, res: Response) => {
+        app.get("/api/admin/users", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const {
                     role,
@@ -655,7 +709,7 @@ async function run() {
             }
         });
 
-        app.patch("/api/admin/users/:id/status", async (req: Request, res: Response) => {
+        app.patch("/api/admin/users/:id/status", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body;
@@ -1408,7 +1462,7 @@ async function run() {
         });
 
         // ---- Get travelers (paginated) ----
-        app.get("/api/admin/allusers/alltravelers", async (req: Request, res: Response) => {
+        app.get("/api/admin/allusers/alltravelers", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const page = Math.max(parseInt(req.query.page as string) || 1, 1);
                 const limit = Math.max(parseInt(req.query.limit as string) || 10, 1);
@@ -1434,7 +1488,7 @@ async function run() {
         });
 
         // ---- Get agencies (paginated) ----
-        app.get("/api/admin/allusers/allagencies", async (req: Request, res: Response) => {
+        app.get("/api/admin/allusers/allagencies", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const page = Math.max(parseInt(req.query.page as string) || 1, 1);
                 const limit = Math.max(parseInt(req.query.limit as string) || 10, 1);
@@ -1460,7 +1514,7 @@ async function run() {
         });
 
         // ---- Change role ----
-        app.patch("/api/admin/allusers/:id/role", async (req: Request, res: Response) => {
+        app.patch("/api/admin/allusers/:id/role", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { role } = req.body;
@@ -1492,7 +1546,7 @@ async function run() {
         });
 
         // ---- Block / Unblock ----
-        app.patch("/api/admin/allusers/:id/status", async (req: Request, res: Response) => {
+        app.patch("/api/admin/allusers/:id/status", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
                 const { status } = req.body; // "active" | "blocked"
@@ -1527,7 +1581,7 @@ async function run() {
         });
 
         // ---- Delete user ----
-        app.delete("/api/admin/allusers/:id", async (req: Request, res: Response) => {
+        app.delete("/api/admin/allusers/:id", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const { id } = req.params;
 
@@ -1548,14 +1602,7 @@ async function run() {
             }
         });
 
-        // Add this alongside your other admin routes.
-        // Assumes: usersCollection, TourPackageCollection, packagebookingCollection
-        // are already defined (as in your existing file), e.g.:
-        //   const usersCollection = database.collection("user");
-        //   const TourPackageCollection = database.collection("TourPackages");
-        //   const packagebookingCollection = database.collection("packageBookings");
-
-        app.get("/api/admin/overview", async (req: Request, res: Response) => {
+        app.get("/api/admin/overview", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const [
                     usersByRole,
@@ -1683,7 +1730,7 @@ async function run() {
         //   const packagebookingCollection = database.collection("packageBookings");
 
         // ---- Finance summary (stat cards + charts) ----
-        app.get("/api/admin/finance/summary", async (req: Request, res: Response) => {
+        app.get("/api/admin/finance/summary", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const [
                     confirmedAgg,
@@ -1800,7 +1847,7 @@ async function run() {
         });
 
         // ---- Transactions (paginated, filterable, searchable) ----
-        app.get("/api/admin/finance/transactions", async (req: Request, res: Response) => {
+        app.get("/api/admin/finance/transactions", verifyToken, veryifyadmin, async (req: Request, res: Response) => {
             try {
                 const page = Math.max(parseInt(req.query.page as string) || 1, 1);
                 const limit = Math.max(parseInt(req.query.limit as string) || 10, 1);
